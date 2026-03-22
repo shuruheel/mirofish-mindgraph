@@ -21,10 +21,10 @@ from enum import Enum
 from ..config import Config
 from ..utils.llm_client import LLMClient
 from ..utils.logger import get_logger
-from .zep_tools import (
-    ZepToolsService, 
-    SearchResult, 
-    InsightForgeResult, 
+from .graph_tools import (
+    GraphToolsService,
+    SearchResult,
+    InsightForgeResult,
     PanoramaResult,
     InterviewResult
 )
@@ -353,7 +353,7 @@ class ReportConsoleLogger:
         # 添加到 report_agent 相关的 logger
         loggers_to_attach = [
             'mirofish.report_agent',
-            'mirofish.zep_tools',
+            'mirofish.graph_tools',
         ]
         
         for logger_name in loggers_to_attach:
@@ -369,7 +369,7 @@ class ReportConsoleLogger:
         if self._file_handler:
             loggers_to_detach = [
                 'mirofish.report_agent',
-                'mirofish.zep_tools',
+                'mirofish.graph_tools',
             ]
             
             for logger_name in loggers_to_detach:
@@ -546,6 +546,38 @@ TOOL_DESC_INTERVIEW_AGENTS = """\
 
 【重要】需要OASIS模拟环境正在运行才能使用此功能！"""
 
+TOOL_DESC_COGNITIVE_ANALYSIS = """\
+【认知分析 - 知识图谱深层结构查询】
+直接查询模拟知识图谱中的认知结构，发现深层规律：
+- weak_claims: 找出置信度最低的声明（最不确定的预测）
+- contradictions: 找出Agent之间互相矛盾的观点
+- open_questions: 找出模拟中未被回答的问题
+
+【使用场景】
+- 撰写"分歧与不确定性"相关章节时
+- 需要发现Agent之间的矛盾和争议时
+- 需要找出预测中最不确定的部分时
+
+【返回内容】
+- 低置信度声明列表（含置信度评分）
+- 矛盾观点对（含矛盾类型）
+- 开放问题列表"""
+
+TOOL_DESC_GRAPH_EXPLORE = """\
+【图谱探索 - 推理链追踪与信念演变】
+深入探索知识图谱的结构，追踪推理链和信念演变：
+- chain: 从某个实体出发，追踪其推理链（因果关系、支持/反驳链）
+- history: 查看某个实体在模拟过程中的演变历史（信念变化、置信度变化）
+
+【使用场景】
+- 需要回答"某个观点是如何形成的？"
+- 需要展示"舆论是如何演变的？"
+- 需要追踪某个Agent/话题的态度变化
+
+【返回内容】
+- 推理链：节点间的逻辑路径（支持、反驳、引用关系）
+- 演变历史：节点的版本列表（每个版本的内容和置信度变化）"""
+
 # ── 大纲规划 prompt ──
 
 PLAN_SYSTEM_PROMPT = """\
@@ -712,6 +744,8 @@ SECTION_SYSTEM_PROMPT_TEMPLATE = """\
 - panorama_search: 广角全景搜索，了解事件全貌、时间线和演变过程
 - quick_search: 快速验证某个具体信息点
 - interview_agents: 采访模拟Agent，获取不同角色的第一人称观点和真实反应
+- cognitive_analysis: 认知结构分析（弱声明/矛盾/开放问题），发现深层分歧和不确定性
+- graph_explore: 推理链追踪和信念演变历史，了解观点形成过程
 
 ═══════════════════════════════════════════════════════════════
 【工作流程】
@@ -886,7 +920,7 @@ class ReportAgent:
         simulation_id: str,
         simulation_requirement: str,
         llm_client: Optional[LLMClient] = None,
-        zep_tools: Optional[ZepToolsService] = None
+        graph_tools: Optional[GraphToolsService] = None
     ):
         """
         初始化Report Agent
@@ -896,14 +930,14 @@ class ReportAgent:
             simulation_id: 模拟ID
             simulation_requirement: 模拟需求描述
             llm_client: LLM客户端（可选）
-            zep_tools: Zep工具服务（可选）
+            graph_tools: 图谱工具服务（可选）
         """
         self.graph_id = graph_id
         self.simulation_id = simulation_id
         self.simulation_requirement = simulation_requirement
         
         self.llm = llm_client or LLMClient()
-        self.zep_tools = zep_tools or ZepToolsService()
+        self.graph_tools = graph_tools or GraphToolsService()
         
         # 工具定义
         self.tools = self._define_tools()
@@ -949,6 +983,23 @@ class ReportAgent:
                     "interview_topic": "采访主题或需求描述（如：'了解学生对宿舍甲醛事件的看法'）",
                     "max_agents": "最多采访的Agent数量（可选，默认5，最大10）"
                 }
+            },
+            "cognitive_analysis": {
+                "name": "cognitive_analysis",
+                "description": TOOL_DESC_COGNITIVE_ANALYSIS,
+                "parameters": {
+                    "analysis_type": "分析类型: weak_claims(弱声明) / contradictions(矛盾) / open_questions(开放问题)",
+                    "limit": "返回结果数量（可选，默认20）"
+                }
+            },
+            "graph_explore": {
+                "name": "graph_explore",
+                "description": TOOL_DESC_GRAPH_EXPLORE,
+                "parameters": {
+                    "mode": "探索模式: chain(推理链追踪) / history(信念演变历史)",
+                    "entity_name": "要探索的实体名称（如人名、组织名、话题名）",
+                    "max_depth": "推理链最大深度（可选，默认3，仅chain模式使用）"
+                }
             }
         }
     
@@ -970,7 +1021,7 @@ class ReportAgent:
             if tool_name == "insight_forge":
                 query = parameters.get("query", "")
                 ctx = parameters.get("report_context", "") or report_context
-                result = self.zep_tools.insight_forge(
+                result = self.graph_tools.insight_forge(
                     graph_id=self.graph_id,
                     query=query,
                     simulation_requirement=self.simulation_requirement,
@@ -984,7 +1035,7 @@ class ReportAgent:
                 include_expired = parameters.get("include_expired", True)
                 if isinstance(include_expired, str):
                     include_expired = include_expired.lower() in ['true', '1', 'yes']
-                result = self.zep_tools.panorama_search(
+                result = self.graph_tools.panorama_search(
                     graph_id=self.graph_id,
                     query=query,
                     include_expired=include_expired
@@ -997,7 +1048,7 @@ class ReportAgent:
                 limit = parameters.get("limit", 10)
                 if isinstance(limit, str):
                     limit = int(limit)
-                result = self.zep_tools.quick_search(
+                result = self.graph_tools.quick_search(
                     graph_id=self.graph_id,
                     query=query,
                     limit=limit
@@ -1011,7 +1062,7 @@ class ReportAgent:
                 if isinstance(max_agents, str):
                     max_agents = int(max_agents)
                 max_agents = min(max_agents, 10)
-                result = self.zep_tools.interview_agents(
+                result = self.graph_tools.interview_agents(
                     simulation_id=self.simulation_id,
                     interview_requirement=interview_topic,
                     simulation_requirement=self.simulation_requirement,
@@ -1019,6 +1070,34 @@ class ReportAgent:
                 )
                 return result.to_text()
             
+            elif tool_name == "cognitive_analysis":
+                # 认知分析 — 弱声明/矛盾/开放问题
+                analysis_type = parameters.get("analysis_type", "weak_claims")
+                limit = parameters.get("limit", 20)
+                if isinstance(limit, str):
+                    limit = int(limit)
+                if analysis_type == "contradictions":
+                    result = self.graph_tools.get_contradictions(self.graph_id, limit)
+                elif analysis_type == "open_questions":
+                    result = self.graph_tools.get_open_questions(self.graph_id, limit)
+                else:
+                    result = self.graph_tools.get_weak_claims(self.graph_id, limit)
+                return result.to_text()
+
+            elif tool_name == "graph_explore":
+                # 图谱探索 — 推理链/信念历史
+                mode = parameters.get("mode", "chain")
+                entity_name = parameters.get("entity_name", "")
+                if not entity_name:
+                    return "请提供 entity_name 参数"
+                if mode == "history":
+                    return self.graph_tools.get_belief_history(self.graph_id, entity_name)
+                else:
+                    max_depth = parameters.get("max_depth", 3)
+                    if isinstance(max_depth, str):
+                        max_depth = int(max_depth)
+                    return self.graph_tools.trace_reasoning_chain(self.graph_id, entity_name, max_depth)
+
             # ========== 向后兼容的旧工具（内部重定向到新工具） ==========
             
             elif tool_name == "search_graph":
@@ -1027,12 +1106,12 @@ class ReportAgent:
                 return self._execute_tool("quick_search", parameters, report_context)
             
             elif tool_name == "get_graph_statistics":
-                result = self.zep_tools.get_graph_statistics(self.graph_id)
+                result = self.graph_tools.get_graph_statistics(self.graph_id)
                 return json.dumps(result, ensure_ascii=False, indent=2)
             
             elif tool_name == "get_entity_summary":
                 entity_name = parameters.get("entity_name", "")
-                result = self.zep_tools.get_entity_summary(
+                result = self.graph_tools.get_entity_summary(
                     graph_id=self.graph_id,
                     entity_name=entity_name
                 )
@@ -1046,7 +1125,7 @@ class ReportAgent:
             
             elif tool_name == "get_entities_by_type":
                 entity_type = parameters.get("entity_type", "")
-                nodes = self.zep_tools.get_entities_by_type(
+                nodes = self.graph_tools.get_entities_by_type(
                     graph_id=self.graph_id,
                     entity_type=entity_type
                 )
@@ -1154,7 +1233,7 @@ class ReportAgent:
             progress_callback("planning", 0, "正在分析模拟需求...")
         
         # 首先获取模拟上下文
-        context = self.zep_tools.get_simulation_context(
+        context = self.graph_tools.get_simulation_context(
             graph_id=self.graph_id,
             simulation_requirement=self.simulation_requirement
         )

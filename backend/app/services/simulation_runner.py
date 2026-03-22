@@ -20,7 +20,7 @@ from queue import Queue
 
 from ..config import Config
 from ..utils.logger import get_logger
-from .zep_graph_memory_updater import ZepGraphMemoryManager
+from .graph_memory_updater import GraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
 logger = get_logger('mirofish.simulation_runner')
@@ -372,9 +372,21 @@ class SimulationRunner:
         if enable_graph_memory_update:
             if not graph_id:
                 raise ValueError("启用图谱记忆更新时必须提供 graph_id")
-            
+
             try:
-                ZepGraphMemoryManager.create_updater(simulation_id, graph_id)
+                # 加载Agent节点UID映射（由simulation_manager.prepare_simulation创建）
+                agent_node_uids = {}
+                uids_path = os.path.join(sim_dir, "agent_node_uids.json")
+                if os.path.exists(uids_path):
+                    with open(uids_path, 'r', encoding='utf-8') as f:
+                        agent_node_uids = json.load(f)
+                    logger.info(f"已加载 {len(agent_node_uids)} 个Agent节点映射")
+
+                GraphMemoryManager.create_updater(
+                    simulation_id, graph_id,
+                    minutes_per_round=minutes_per_round,
+                    agent_node_uids=agent_node_uids,
+                )
                 cls._graph_memory_enabled[simulation_id] = True
                 logger.info(f"已启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
             except Exception as e:
@@ -551,7 +563,7 @@ class SimulationRunner:
             # 停止图谱记忆更新器
             if cls._graph_memory_enabled.get(simulation_id, False):
                 try:
-                    ZepGraphMemoryManager.stop_updater(simulation_id)
+                    GraphMemoryManager.stop_updater(simulation_id)
                     logger.info(f"已停止图谱记忆更新: simulation_id={simulation_id}")
                 except Exception as e:
                     logger.error(f"停止图谱记忆更新器失败: {e}")
@@ -599,7 +611,7 @@ class SimulationRunner:
         graph_memory_enabled = cls._graph_memory_enabled.get(state.simulation_id, False)
         graph_updater = None
         if graph_memory_enabled:
-            graph_updater = ZepGraphMemoryManager.get_updater(state.simulation_id)
+            graph_updater = GraphMemoryManager.get_updater(state.simulation_id)
         
         try:
             with open(log_path, 'r', encoding='utf-8') as f:
@@ -654,7 +666,16 @@ class SimulationRunner:
                                         state.current_round = round_num
                                     # 总体时间取两个平台的最大值
                                     state.simulated_hours = max(state.twitter_simulated_hours, state.reddit_simulated_hours)
-                                
+
+                                    # 轮间衰减 + 记录轮次观察
+                                    if graph_updater:
+                                        graph_updater.record_round_end(
+                                            round_num=round_num,
+                                            platform=platform,
+                                            actions_count=action_data.get("total_actions", 0),
+                                        )
+                                        graph_updater.decay_round(round_num)
+
                                 continue
                             
                             action = AgentAction(
@@ -807,7 +828,7 @@ class SimulationRunner:
         # 停止图谱记忆更新器
         if cls._graph_memory_enabled.get(simulation_id, False):
             try:
-                ZepGraphMemoryManager.stop_updater(simulation_id)
+                GraphMemoryManager.stop_updater(simulation_id)
                 logger.info(f"已停止图谱记忆更新: simulation_id={simulation_id}")
             except Exception as e:
                 logger.error(f"停止图谱记忆更新器失败: {e}")
@@ -1201,7 +1222,7 @@ class SimulationRunner:
         
         # 首先停止所有图谱记忆更新器（stop_all 内部会打印日志）
         try:
-            ZepGraphMemoryManager.stop_all()
+            GraphMemoryManager.stop_all()
         except Exception as e:
             logger.error(f"停止图谱记忆更新器失败: {e}")
         cls._graph_memory_enabled.clear()

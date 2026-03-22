@@ -14,7 +14,7 @@ from enum import Enum
 
 from ..config import Config
 from ..utils.logger import get_logger
-from .zep_entity_reader import ZepEntityReader, FilteredEntities
+from .entity_reader import EntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 
@@ -270,9 +270,9 @@ class SimulationManager:
             
             # ========== 阶段1: 读取并过滤实体 ==========
             if progress_callback:
-                progress_callback("reading", 0, "正在连接Zep图谱...")
+                progress_callback("reading", 0, "正在连接知识图谱...")
             
-            reader = ZepEntityReader()
+            reader = EntityReader()
             
             if progress_callback:
                 progress_callback("reading", 30, "正在读取节点数据...")
@@ -434,9 +434,93 @@ class SimulationManager:
                     total=3
                 )
             
+            # ========== 阶段4: 注册认知结构 + Agent节点到MindGraph ==========
+            if Config.MINDGRAPH_API_KEY:
+                try:
+                    from ..utils.mindgraph_client import MindGraphClient
+                    mg_client = MindGraphClient()
+
+                    # 注册预测问题为Hypothesis节点
+                    mg_client.add_hypothesis(
+                        statement=simulation_requirement,
+                        project_id=state.graph_id,
+                    )
+                    logger.info(f"已注册预测假说: {simulation_requirement[:50]}...")
+
+                    # 为每个Agent创建Agent节点 + 为非中立Agent创建Goal节点
+                    agent_node_uids = {}  # agent_name → agent_node_uid
+                    goals_created = 0
+                    for agent_config in sim_params.agent_configs:
+                        name = agent_config.entity_name
+                        stance = getattr(agent_config, 'stance', 'neutral')
+                        sentiment = getattr(agent_config, 'sentiment_bias', 0.0)
+                        influence = getattr(agent_config, 'influence_weight', 1.0)
+                        entity_type = getattr(agent_config, 'entity_type', '')
+
+                        # 创建Agent节点
+                        try:
+                            result = mg_client.register_agent_node(
+                                name=name,
+                                project_id=state.graph_id,
+                                summary=f"{entity_type}: {stance} stance, sentiment={sentiment}",
+                                props={
+                                    "entity_type": entity_type,
+                                    "stance": stance,
+                                    "sentiment_bias": sentiment,
+                                    "influence_weight": influence,
+                                },
+                            )
+                            uid = result.get("uid", "")
+                            if uid:
+                                agent_node_uids[name] = uid
+                        except Exception as e:
+                            logger.warning(f"注册Agent节点失败 ({name}): {e}")
+
+                        # 为非中立Agent创建Goal节点
+                        if stance != "neutral":
+                            try:
+                                goal_result = mg_client.create_goal(
+                                    label=f"{name}: {stance} stance",
+                                    project_id=state.graph_id,
+                                    description=(
+                                        f"Agent {name} has a {stance} stance "
+                                        f"with sentiment bias {sentiment}"
+                                    ),
+                                    priority="high" if abs(sentiment) > 0.5 else "medium",
+                                )
+                                goals_created += 1
+                                # 链接Agent → Goal
+                                goal_uid = goal_result.get("uid", "")
+                                agent_uid = agent_node_uids.get(name, "")
+                                if goal_uid and agent_uid:
+                                    mg_client.add_link(
+                                        from_uid=agent_uid,
+                                        to_uid=goal_uid,
+                                        edge_type="HAS_GOAL",
+                                        agent_id=state.graph_id,
+                                    )
+                            except Exception as e:
+                                logger.warning(f"创建Goal节点失败 ({name}): {e}")
+
+                    logger.info(
+                        f"已注册 {len(agent_node_uids)} 个Agent节点, "
+                        f"{goals_created} 个Goal节点"
+                    )
+
+                    # 保存agent_node_uids映射到模拟目录
+                    if agent_node_uids:
+                        import json as _json
+                        uids_path = os.path.join(sim_dir, "agent_node_uids.json")
+                        with open(uids_path, 'w', encoding='utf-8') as f:
+                            _json.dump(agent_node_uids, f, ensure_ascii=False)
+                        logger.info(f"Agent节点映射已保存: {uids_path}")
+
+                except Exception as e:
+                    logger.warning(f"注册认知结构失败（不影响模拟）: {e}")
+
             # 注意：运行脚本保留在 backend/scripts/ 目录，不再复制到模拟目录
             # 启动模拟时，simulation_runner 会从 scripts/ 目录运行脚本
-            
+
             # 更新状态
             state.status = SimulationStatus.READY
             self._save_simulation_state(state)

@@ -1,6 +1,6 @@
 """
 模拟相关API路由
-Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化）
+Step2: MindGraph实体读取与过滤、OASIS模拟准备与运行（全程自动化）
 """
 
 import os
@@ -370,7 +370,7 @@ def prepare_simulation():
     
     步骤：
     1. 检查是否已有完成的准备工作
-    2. 从Zep图谱读取并过滤实体
+    2. 从MindGraph图谱读取并过滤实体
     3. 为每个实体生成OASIS Agent Profile（带重试机制）
     4. LLM智能生成模拟配置（带重试机制）
     5. 保存配置文件和预设脚本
@@ -1453,7 +1453,7 @@ def start_simulation():
             "simulation_id": "sim_xxxx",          // 必填，模拟ID
             "platform": "parallel",                // 可选: twitter / reddit / parallel (默认)
             "max_rounds": 100,                     // 可选: 最大模拟轮数，用于截断过长的模拟
-            "enable_graph_memory_update": false,   // 可选: 是否将Agent活动动态更新到Zep图谱记忆
+            "enable_graph_memory_update": false,   // 可选: 是否将Agent活动动态更新到MindGraph图谱记忆
             "force": false                         // 可选: 强制重新开始（会停止运行中的模拟并清理日志）
         }
 
@@ -1464,7 +1464,7 @@ def start_simulation():
         - 适用于需要重新运行模拟的场景
 
     关于 enable_graph_memory_update：
-        - 启用后，模拟中所有Agent的活动（发帖、评论、点赞等）都会实时更新到Zep图谱
+        - 启用后，模拟中所有Agent的活动（发帖、评论、点赞等）都会实时更新到MindGraph图谱
         - 这可以让图谱"记住"模拟过程，用于后续分析或AI对话
         - 需要模拟关联的项目有有效的 graph_id
         - 采用批量更新机制，减少API调用次数

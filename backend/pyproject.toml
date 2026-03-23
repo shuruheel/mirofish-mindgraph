@@ -17,7 +17,7 @@ dependencies = [
     "openai>=1.0.0",
     
     # MindGraph 知识图谱
-    "mindgraph-sdk>=0.1.0",
+    "mindgraph-sdk>=0.1.3,<0.2",
     "requests>=2.31.0",
     
     # OASIS 社交媒体模拟

@@ -482,7 +482,7 @@ class GraphMemoryUpdater:
                     from_uid=agent_uid,
                     to_uid=uid,
                     edge_type=edge_type,
-                    agent_id=self.graph_id,
+                    project_id=self.graph_id,
                 )
             except Exception as e:
                 logger.debug(f"创建{edge_type}边失败 ({agent_uid[:8]}→{uid[:8]}): {e}")
@@ -500,7 +500,7 @@ class GraphMemoryUpdater:
         """
         half_life_secs = self.minutes_per_round * 60 * 3
         try:
-            self.client.decay_project_salience(
+            self.client.decay_salience(
                 project_id=self.graph_id,
                 half_life_secs=half_life_secs,
                 min_salience=0.05,

@@ -1248,7 +1248,7 @@ class GraphToolsService:
         result.active_facts = active_facts[:limit]
         result.active_count = len(active_facts)
 
-        # 通过版本历史重建temporal演变（替代Zep的expired_at/invalid_at）
+        # 通过版本历史重建temporal演变（MindGraph无expired_at/invalid_at）
         historical_facts = []
         if all_nodes:
             sample_nodes = all_nodes[:5]  # 采样前5个最相关的实体

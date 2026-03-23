@@ -828,7 +828,7 @@ class OasisProfileGenerator:
         import concurrent.futures
         from threading import Lock
         
-        # 设置graph_id用于Zep检索
+        # 设置graph_id用于MindGraph检索
         if graph_id:
             self.graph_id = graph_id
         

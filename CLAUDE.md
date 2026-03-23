@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MiroFish is a multi-agent swarm intelligence simulation engine for predictive analytics. Users upload documents, a knowledge graph is built via Zep Cloud, thousands of autonomous AI agents are generated with unique personas, and OASIS (CAMEL-AI) runs parallel Twitter/Reddit simulations to predict outcomes. The system follows a 5-step pipeline: Graph Construction → Environment Setup → Simulation → Report Generation → Deep Interaction.
+MiroFish is a multi-agent swarm intelligence simulation engine for predictive analytics. Users upload documents, a knowledge graph is built via MindGraph Cloud, thousands of autonomous AI agents are generated with unique personas, and OASIS (CAMEL-AI) runs parallel Twitter/Reddit simulations to predict outcomes. The system follows a 5-step pipeline: Graph Construction → Environment Setup → Simulation → Report Generation → Deep Interaction.
 
 ## Commands
 
 ```bash
 # Setup
-cp .env.example .env              # Then fill in LLM_API_KEY, ZEP_API_KEY, etc.
+cp .env.example .env              # Then fill in LLM_API_KEY, MINDGRAPH_API_KEY, etc.
 npm run setup:all                  # Install frontend (npm) + backend (uv) deps
 
 # Development
@@ -29,13 +29,13 @@ There are no test or lint commands configured in this project.
 
 ## Architecture
 
-**Tech stack**: Vue 3 + Vite frontend, Flask backend, Zep Cloud (knowledge graph/memory), OASIS/CAMEL-AI (multi-agent simulation), OpenAI SDK (LLM calls, any OpenAI-compatible API).
+**Tech stack**: Vue 3 + Vite frontend, Flask backend, MindGraph Cloud via `mindgraph-sdk` (knowledge graph/memory), OASIS/CAMEL-AI (multi-agent simulation), OpenAI SDK (LLM calls, any OpenAI-compatible API).
 
 ### Backend (`backend/`)
 
 Flask app factory in `app/__init__.py`. Three API blueprints:
 
-- **`api/graph.py`** — Project creation, file upload/parsing, ontology generation, Zep knowledge graph construction
+- **`api/graph.py`** — Project creation, file upload/parsing, ontology generation, MindGraph knowledge graph construction
 - **`api/simulation.py`** — Entity reading from graph, agent profile generation, OASIS dual-platform simulation management (Twitter + Reddit run in parallel child processes)
 - **`api/report.py`** — Report generation via tool-augmented LLM agent, report retrieval, conversational interaction
 
@@ -43,10 +43,17 @@ Key services in `app/services/`:
 
 - **`simulation_runner.py`** — Spawns OASIS simulations as child processes via `simulation_ipc.py`
 - **`simulation_manager.py`** — State machine: CREATED → PREPARING → READY → RUNNING → COMPLETED
-- **`graph_builder.py`** / **`ontology_generator.py`** — Text chunking → Zep graph construction with LLM-generated ontologies
+- **`graph_builder.py`** / **`ontology_generator.py`** — Text chunking → MindGraph graph construction with LLM-generated ontologies
+- **`graph_memory_updater.py`** — Real-time simulation activity → graph (Agent posts, decisions, anomalies)
+- **`graph_tools.py`** — Search/retrieval tools for the report agent (hybrid search, RAG context, cognitive queries)
+- **`entity_reader.py`** — Entity extraction from MindGraph for agent generation
 - **`oasis_profile_generator.py`** / **`simulation_config_generator.py`** — LLM-driven agent persona and simulation parameter generation
 - **`report_agent.py`** — ReportAgent with tool-use capabilities (queries simulation state, entity context)
 - **`llm_client.py`** — Unified LLM client wrapping OpenAI SDK; supports optional "boost" model config
+
+Key utility in `app/utils/`:
+
+- **`mindgraph_client.py`** — Thin wrapper around `mindgraph-sdk` adding retry logic and project-level namespace isolation via `agent_id`. All services use this instead of the SDK directly.
 
 Graph building and report generation are async tasks tracked via `models/task.py` with progress polling.
 
@@ -67,7 +74,7 @@ API clients in `src/api/` use Axios with 5-minute timeout. D3.js powers knowledg
 All config via environment variables (see `.env.example`):
 
 - `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_NAME` — Primary LLM (default model: qwen-plus via Aliyun DashScope)
-- `ZEP_API_KEY` — Zep Cloud for knowledge graph storage
+- `MINDGRAPH_API_KEY` — MindGraph Cloud for knowledge graph storage
 - `LLM_BOOST_*` — Optional secondary LLM for performance-critical calls
 - File uploads: max 50MB, accepts `.pdf`, `.md`, `.txt`, `.markdown`
 
@@ -75,6 +82,7 @@ All config via environment variables (see `.env.example`):
 
 - Backend uses server-side state for projects and simulations (no client-side persistence)
 - LLM calls use OpenAI SDK format throughout — any OpenAI-compatible API works
+- MindGraph namespace isolation uses `agent_id=project_id` — one API key = one org graph, projects separated by agent_id
 - The `<think>` tag stripping in `report_agent.py` and `simulation.py` handles reasoning model output (e.g., MiniMax, GLM)
 - Bilingual support (Chinese/English) — UI text and LLM prompts use Chinese
 

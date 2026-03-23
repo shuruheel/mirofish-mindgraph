@@ -199,7 +199,7 @@ class GraphBuilderService:
         """
         设置图谱本体
 
-        MindGraph有56种内置节点类型，不需要像Zep那样动态创建Pydantic类。
+        MindGraph有56种内置节点类型，不需要动态创建Pydantic类。
         我们为每个本体定义的实体类型预创建"锚点"Entity节点，
         帮助MindGraph的实体解析在自动提取时正确匹配类型。
         """
@@ -330,10 +330,7 @@ class GraphBuilderService:
 
             for job_id in list(pending_jobs):
                 try:
-                    result = self.client._request(
-                        "GET", f"/jobs/{job_id}",
-                        operation_name=f"检查任务({job_id[:12]})"
-                    )
+                    result = self.client.get_job(job_id)
                     status = result.get("status", "")
 
                     if status in ("completed", "failed", "cancelled"):

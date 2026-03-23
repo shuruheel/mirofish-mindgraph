@@ -314,8 +314,8 @@ class SimulationRunner:
         simulation_id: str,
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # 最大模拟轮数（可选，用于截断过长的模拟）
-        enable_graph_memory_update: bool = False,  # 是否将活动更新到Zep图谱
-        graph_id: str = None  # Zep图谱ID（启用图谱更新时必需）
+        enable_graph_memory_update: bool = False,  # 是否将活动更新到MindGraph图谱
+        graph_id: str = None  # MindGraph图谱ID（启用图谱更新时必需）
     ) -> SimulationRunState:
         """
         启动模拟
@@ -324,8 +324,8 @@ class SimulationRunner:
             simulation_id: 模拟ID
             platform: 运行平台 (twitter/reddit/parallel)
             max_rounds: 最大模拟轮数（可选，用于截断过长的模拟）
-            enable_graph_memory_update: 是否将Agent活动动态更新到Zep图谱
-            graph_id: Zep图谱ID（启用图谱更新时必需）
+            enable_graph_memory_update: 是否将Agent活动动态更新到MindGraph图谱
+            graph_id: MindGraph图谱ID（启用图谱更新时必需）
             
         Returns:
             SimulationRunState
@@ -695,7 +695,7 @@ class SimulationRunner:
                             if action.round_num and action.round_num > state.current_round:
                                 state.current_round = action.round_num
                             
-                            # 如果启用了图谱记忆更新，将活动发送到Zep
+                            # 如果启用了图谱记忆更新，将活动发送到MindGraph
                             if graph_updater:
                                 graph_updater.add_activity_from_dict(action_data, platform)
                             

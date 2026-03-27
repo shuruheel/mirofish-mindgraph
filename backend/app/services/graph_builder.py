@@ -400,14 +400,22 @@ class GraphBuilderService:
         except Exception as e:
             logger.debug(f"实体去重检查失败: {e}")
 
-    def get_graph_data(self, graph_id: str) -> Dict[str, Any]:
+    def get_graph_data(self, graph_id: str, source: str = "upload") -> Dict[str, Any]:
         """
         获取完整图谱数据（包含详细信息）
 
         返回格式与前端兼容（保持原有API契约）
+
+        Args:
+            graph_id: 图谱ID
+            source: "upload"（按agent_id过滤）或 "mindgraph"（读取全量图谱）
         """
-        nodes = self.client.list_all_nodes(project_id=graph_id)
-        edges = self.client.list_all_edges(project_id=graph_id)
+        if source == "mindgraph":
+            nodes = self.client.list_all_graph_nodes()
+            edges = self.client.list_all_graph_edges(nodes=nodes)
+        else:
+            nodes = self.client.list_all_nodes(project_id=graph_id)
+            edges = self.client.list_all_edges(project_id=graph_id)
 
         # 创建节点映射用于获取节点名称
         node_map = {}

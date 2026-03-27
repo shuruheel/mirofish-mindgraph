@@ -1231,14 +1231,14 @@ wheels = [
 
 [[package]]
 name = "mindgraph-sdk"
-version = "0.1.2"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/9c/f3da4f96481835ecac6f0464e116f2188e9b0ec691be3439c37e7c38bd98/mindgraph_sdk-0.1.2.tar.gz", hash = "sha256:d50206095c78b0f6b9bd27f9062f0ea282bb7e52d84c686d547aaa692c2bd94c", size = 4573 }
+sdist = { url = "https://files.pythonhosted.org/packages/6d/6f/cf8fe4853a4b35b5f937941a1c4a4c4800090d73e27548449328abd4fe96/mindgraph_sdk-0.1.4.tar.gz", hash = "sha256:b36701da05d71b999747ee77bb0fc61c78d14c1b8d5c5697c5e96b38303e55bc", size = 16782 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/0e/46c8b4bb5574c977452bfeb6673c18202afc125a988a9c88b5e025628fdb/mindgraph_sdk-0.1.2-py3-none-any.whl", hash = "sha256:e09bfb1114cbd155d4d0d5c5acb12554230fe92ff9e993754f0c34e75506a55e", size = 5080 },
+    { url = "https://files.pythonhosted.org/packages/bd/16/2095cacc570e19446fd894bb59e5e70421b8a827e9c34df8e0280ebe62b0/mindgraph_sdk-0.1.4-py3-none-any.whl", hash = "sha256:618c88aa68499548fce55c511857c4dd54dfa4b2ba95fcecad8def9c32a363e6", size = 8157 },
 ]
 
 [[package]]
@@ -1281,7 +1281,7 @@ requires-dist = [
     { name = "charset-normalizer", specifier = ">=3.0.0" },
     { name = "flask", specifier = ">=3.0.0" },
     { name = "flask-cors", specifier = ">=6.0.0" },
-    { name = "mindgraph-sdk", specifier = ">=0.1.0" },
+    { name = "mindgraph-sdk", specifier = ">=0.1.3,<0.2" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "pipreqs", marker = "extra == 'dev'", specifier = ">=0.5.0" },
     { name = "pydantic", specifier = ">=2.0.0" },

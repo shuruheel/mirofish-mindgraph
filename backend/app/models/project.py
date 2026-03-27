@@ -44,6 +44,9 @@ class Project:
     graph_id: Optional[str] = None
     graph_build_task_id: Optional[str] = None
     
+    # 数据来源: "upload" (上传文档构建图谱) 或 "mindgraph" (连接已有MindGraph图谱)
+    source: str = "upload"
+
     # 配置
     simulation_requirement: Optional[str] = None
     chunk_size: int = 500
@@ -66,6 +69,7 @@ class Project:
             "analysis_summary": self.analysis_summary,
             "graph_id": self.graph_id,
             "graph_build_task_id": self.graph_build_task_id,
+            "source": self.source,
             "simulation_requirement": self.simulation_requirement,
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
@@ -91,6 +95,7 @@ class Project:
             analysis_summary=data.get('analysis_summary'),
             graph_id=data.get('graph_id'),
             graph_build_task_id=data.get('graph_build_task_id'),
+            source=data.get('source', 'upload'),
             simulation_requirement=data.get('simulation_requirement'),
             chunk_size=data.get('chunk_size', 500),
             chunk_overlap=data.get('chunk_overlap', 50),

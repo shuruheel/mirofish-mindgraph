@@ -214,26 +214,40 @@ class MindGraphClient:
         """语义搜索 — 降级为hybrid（semantic需要embedding配置）"""
         return self.search_hybrid(query, project_id, limit)
 
-    def retrieve_context(self, query: str, project_id: str,
-                         k: int = 5, depth: int = 1) -> Dict[str, Any]:
+    def retrieve_context(self, query: str, project_id: Optional[str] = None,
+                         k: int = 5, depth: int = 1,
+                         include_chunks: Optional[bool] = None) -> Dict[str, Any]:
         """
         图谱增强RAG检索
 
-        注意：SDK的retrieve_context()方法不支持agent_id参数，
-        因此这里直接调用SDK的内部_request()方法以传递agent_id
-        实现命名空间过滤。这是已知的SDK限制，已在mindgraph-sdk
-        issue跟踪中。确保SDK版本锁定在 <0.2 以防内部API变更。
+        SDK v0.1.4+ 提供原生 retrieve_context() 方法，搜索整个图谱。
+        当 project_id 指定时，通过 _request 传入 agent_id 进行命名空间过滤。
+        当 project_id 为 None 时，使用 SDK 原生方法搜索全量图谱。
         """
-        body = {
-            "query": query,
-            "k": k,
-            "depth": depth,
-            "agent_id": project_id,
-        }
-        return self._with_retry(
-            self._mg._request, "POST", "/retrieve/context", body,
-            operation_name=f"RAG检索(query={query[:30]}..., k={k}, depth={depth})",
-        )
+        if project_id:
+            # 带agent_id命名空间过滤
+            body: Dict[str, Any] = {
+                "query": query,
+                "k": k,
+                "depth": depth,
+                "agent_id": project_id,
+            }
+            if include_chunks is not None:
+                body["include_chunks"] = include_chunks
+            return self._with_retry(
+                self._mg._request, "POST", "/retrieve/context", body,
+                operation_name=f"RAG检索(query={query[:30]}..., k={k})",
+            )
+        else:
+            # 搜索整个图谱（MindGraph连接模式）
+            kwargs: Dict[str, Any] = {"query": query, "k": k, "depth": depth}
+            if include_chunks is not None:
+                kwargs["include_chunks"] = include_chunks
+            return self._with_retry(
+                self._mg.retrieve_context,
+                **kwargs,
+                operation_name=f"RAG全局检索(query={query[:30]}..., k={k})",
+            )
 
     # ═══════════════════════════════════════
     # 认知查询
@@ -307,6 +321,84 @@ class MindGraphClient:
         )
         return result.get("items", result) if isinstance(result, dict) else result
 
+    def list_all_graph_nodes(self, node_type: Optional[str] = None,
+                            layer: Optional[str] = None, max_items: int = 2000) -> List[Dict[str, Any]]:
+        """
+        获取整个图谱的所有节点（不按agent_id过滤）
+
+        用于连接已有MindGraph图谱的场景，读取用户通过MindGraph Cloud
+        构建的全量图谱数据。
+        """
+        all_nodes = []
+        offset = 0
+        page_size = 100
+
+        while len(all_nodes) < max_items:
+            batch = self.list_nodes(
+                project_id="__global__",  # 仅用于日志，不影响查询
+                node_type=node_type,
+                layer=layer,
+                limit=page_size,
+                offset=offset,
+            )
+            if not batch:
+                break
+            all_nodes.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+        logger.info(f"全量图谱节点读取完成: 共 {len(all_nodes)} 个节点")
+        return all_nodes[:max_items]
+
+    def list_all_graph_edges(self, nodes: Optional[List[Dict[str, Any]]] = None,
+                            max_items: int = 5000) -> List[Dict[str, Any]]:
+        """
+        获取图谱的边（不按agent_id过滤）
+
+        使用 POST /edges/batch 批量接口，一次请求获取所有节点间的边。
+
+        Args:
+            nodes: 预先获取的节点列表（避免重复查询）
+            max_items: 最多返回多少条边
+        """
+        if nodes is None:
+            nodes = self.list_all_graph_nodes()
+
+        node_uids = [n.get("uid", "") for n in nodes if n.get("uid")]
+        if not node_uids:
+            return []
+
+        logger.info(f"批量查询 {len(node_uids)} 个节点间的边...")
+
+        try:
+            edges = self._with_retry(
+                self._mg.get_edges_batch, node_uids,
+                operation_name=f"批量查询边({len(node_uids)}个节点)",
+            )
+            logger.info(f"全量图谱边读取完成: 共 {len(edges)} 条边")
+            return edges[:max_items]
+        except Exception as e:
+            logger.warning(f"批量边查询失败，回退到逐节点查询: {e}")
+            # 回退：逐节点查询（限制数量避免超时）
+            all_edges = []
+            seen_uids = set()
+            for node_uid in node_uids[:200]:
+                try:
+                    node_edges = self._with_retry(
+                        self._mg.get_edges, from_uid=node_uid,
+                        operation_name=f"列出边(from={node_uid[:12]})",
+                    )
+                    for edge in node_edges:
+                        edge_uid = edge.get("uid", "")
+                        if edge_uid and edge_uid not in seen_uids:
+                            seen_uids.add(edge_uid)
+                            all_edges.append(edge)
+                except Exception:
+                    pass
+            logger.info(f"回退边查询完成: 共 {len(all_edges)} 条边")
+            return all_edges[:max_items]
+
     def list_all_nodes(self, project_id: str, node_type: Optional[str] = None,
                        layer: Optional[str] = None, max_items: int = 2000) -> List[Dict[str, Any]]:
         """
@@ -353,10 +445,24 @@ class MindGraphClient:
         """
         获取项目所有边
 
-        GET /edges 要求 from_uid 或 to_uid，无法按agent过滤。
-        先列出所有节点，再查询每个节点的出边并去重。
+        使用 POST /edges/batch 批量接口获取节点间的边。
+        回退到逐节点查询（如果批量接口不可用）。
         """
         nodes = self.list_all_nodes(project_id=project_id)
+        node_uids = [n.get("uid", "") for n in nodes if n.get("uid")]
+        if not node_uids:
+            return []
+
+        try:
+            edges = self._with_retry(
+                self._mg.get_edges_batch, node_uids,
+                operation_name=f"批量查询边({len(node_uids)}个节点, project={project_id})",
+            )
+            return edges
+        except Exception as e:
+            logger.debug(f"批量边查询失败，回退到逐节点查询: {e}")
+
+        # 回退：逐节点查询
         all_edges = []
         seen_uids = set()
 

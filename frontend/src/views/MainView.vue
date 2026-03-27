@@ -62,6 +62,7 @@
         <!-- Step 2: 环境搭建 -->
         <Step2EnvSetup
           v-else-if="currentStep === 2"
+          :simulationId="currentSimulationId"
           :projectData="projectData"
           :graphData="graphData"
           :systemLogs="systemLogs"
@@ -81,7 +82,12 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { createSimulation, listSimulations } from '../api/simulation'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
+
+// 项目数据来源
+const projectSource = ref('upload') // 'upload' 或 'mindgraph'
+const currentSimulationId = ref(null)
 
 const route = useRoute()
 const router = useRouter()
@@ -156,11 +162,19 @@ const toggleMaximize = (target) => {
   }
 }
 
-const handleNextStep = (params = {}) => {
+const handleNextStep = async (params = {}) => {
   if (currentStep.value < 5) {
-    currentStep.value++
+    const nextStep = currentStep.value + 1
+
+    // 进入 Step 2 时查找或创建模拟实例
+    if (nextStep === 2 && !currentSimulationId.value && projectData.value) {
+      await findOrCreateSimulation(projectData.value.project_id, projectData.value.graph_id)
+      if (!currentSimulationId.value) return
+    }
+
+    currentStep.value = nextStep
     addLog(`进入 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
-    
+
     // 如果是从 Step 2 进入 Step 3，记录模拟轮数配置
     if (currentStep.value === 3 && params.maxRounds) {
       addLog(`自定义模拟轮数: ${params.maxRounds} 轮`)
@@ -183,6 +197,43 @@ const initProject = async () => {
     await handleNewProject()
   } else {
     await loadProject()
+  }
+}
+
+const findOrCreateSimulation = async (projectId, graphId) => {
+  try {
+    // Check for existing simulations for this project
+    const listRes = await listSimulations(projectId)
+    if (listRes.success && listRes.data?.length > 0) {
+      // Pick the most recent non-failed simulation
+      const existing = listRes.data.find(s =>
+        s.status !== 'failed'
+      )
+      if (existing) {
+        currentSimulationId.value = existing.simulation_id
+        addLog(`已找到现有模拟实例: ${existing.simulation_id} (${existing.status})`)
+        return
+      }
+    }
+  } catch (err) {
+    addLog(`查询现有模拟失败，将创建新实例: ${err.message}`)
+  }
+
+  // No existing simulation found — create a new one
+  try {
+    addLog('创建模拟实例...')
+    const res = await createSimulation({
+      project_id: projectId,
+      graph_id: graphId
+    })
+    if (res.success) {
+      currentSimulationId.value = res.data.simulation_id
+      addLog(`模拟实例已创建: ${res.data.simulation_id}`)
+    } else {
+      addLog(`创建模拟实例失败: ${res.error}`)
+    }
+  } catch (err) {
+    addLog(`创建模拟实例异常: ${err.message}`)
   }
 }
 
@@ -233,9 +284,28 @@ const loadProject = async () => {
     const res = await getProject(currentProjectId.value)
     if (res.success) {
       projectData.value = res.data
+      projectSource.value = res.data.source || 'upload'
+
+      // MindGraph连接模式：跳过Step 1，直接进入Step 2
+      if (projectSource.value === 'mindgraph') {
+        currentPhase.value = 2
+        addLog(`MindGraph connection loaded. Skipping graph build.`)
+
+        // 查找已有模拟实例（支持页面刷新后重连）
+        await findOrCreateSimulation(res.data.project_id, res.data.graph_id)
+
+        currentStep.value = 2
+
+        // 加载已有图谱数据用于可视化
+        if (res.data.graph_id) {
+          await loadGraph(res.data.graph_id)
+        }
+        return
+      }
+
       updatePhaseByStatus(res.data.status)
       addLog(`Project loaded. Status: ${res.data.status}`)
-      
+
       if (res.data.status === 'ontology_generated' && !res.data.graph_id) {
         await startBuildGraph()
       } else if (res.data.status === 'graph_building' && res.data.graph_build_task_id) {
@@ -300,7 +370,7 @@ const fetchGraphData = async () => {
     // Refresh project info to check for graph_id
     const projRes = await getProject(currentProjectId.value)
     if (projRes.success && projRes.data.graph_id) {
-      const gRes = await getGraphData(projRes.data.graph_id)
+      const gRes = await getGraphData(projRes.data.graph_id, { source: projectSource.value })
       if (gRes.success) {
         graphData.value = gRes.data
         const nodeCount = gRes.data.node_count || gRes.data.nodes?.length || 0
@@ -358,7 +428,7 @@ const loadGraph = async (graphId) => {
   graphLoading.value = true
   addLog(`Loading full graph data: ${graphId}`)
   try {
-    const res = await getGraphData(graphId)
+    const res = await getGraphData(graphId, { source: projectSource.value })
     if (res.success) {
       graphData.value = res.data
       addLog('Graph data loaded successfully.')

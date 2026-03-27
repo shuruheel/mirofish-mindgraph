@@ -783,7 +783,7 @@ const startPrepareSimulation = async () => {
     const res = await prepareSimulation({
       simulation_id: props.simulationId,
       use_llm_for_profiles: true,
-      parallel_profile_count: 5
+      parallel_profile_count: 20
     })
     
     if (res.success && res.data) {
@@ -792,11 +792,15 @@ const startPrepareSimulation = async () => {
         await loadPreparedData()
         return
       }
-      
-      taskId.value = res.data.task_id
-      addLog(`准备任务已启动`)
-      addLog(`  └─ Task ID: ${res.data.task_id}`)
-      
+
+      if (res.data.task_id) {
+        taskId.value = res.data.task_id
+        addLog(`准备任务已启动`)
+        addLog(`  └─ Task ID: ${res.data.task_id}`)
+      } else {
+        addLog(`准备任务已在进行中，恢复轮询...`)
+      }
+
       // 立即设置预期Agent总数（从prepare接口返回值获取）
       if (res.data.expected_entities_count) {
         expectedTotal.value = res.data.expected_entities_count
@@ -805,7 +809,7 @@ const startPrepareSimulation = async () => {
           addLog(`  └─ 实体类型: ${res.data.entity_types.join(', ')}`)
         }
       }
-      
+
       addLog('开始轮询准备进度...')
       // 开始轮询进度
       startPolling()
@@ -1063,6 +1067,14 @@ watch(() => props.systemLogs?.length, () => {
       logContent.value.scrollTop = logContent.value.scrollHeight
     }
   })
+})
+
+// 监听 simulationId 变化（可能在组件挂载后才设置）
+watch(() => props.simulationId, (newId) => {
+  if (newId && phase.value === 0) {
+    addLog('Step2 环境搭建初始化')
+    startPrepareSimulation()
+  }
 })
 
 onMounted(() => {

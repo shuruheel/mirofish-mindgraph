@@ -414,11 +414,12 @@ class GraphToolsService:
     - get_entity_summary - 获取实体的关系摘要
     """
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None, source: str = "upload"):
         self.client = MindGraphClient()
+        self.source = source
         # LLM客户端用于InsightForge生成子问题
         self._llm_client = llm_client
-        logger.info("GraphToolsService 初始化完成")
+        logger.info(f"GraphToolsService 初始化完成 (source={source})")
 
     @property
     def llm(self) -> LLMClient:
@@ -452,12 +453,32 @@ class GraphToolsService:
         logger.info(f"图谱搜索: graph_id={graph_id}, query={query[:50]}...")
 
         # 使用MindGraph混合搜索API
+        # Connect mode: use retrieve_context (unscoped) for broader results
+        # Upload mode: use search_hybrid (agent_id scoped)
         try:
-            search_response = self.client.search_hybrid(
-                query=query,
-                project_id=graph_id,
-                limit=limit
-            )
+            if self.source == "mindgraph":
+                search_response = self.client.retrieve_context(
+                    query=query, project_id=None, k=limit, depth=1,
+                    include_chunks=False,
+                )
+                # Normalize retrieve_context response to search_hybrid format
+                graph_data = search_response.get("graph", {})
+                raw_nodes = graph_data.get("nodes", [])
+                raw_edges = graph_data.get("edges", [])
+                results_list = []
+                for n in raw_nodes:
+                    results_list.append(n)
+                for e in raw_edges:
+                    results_list.append(e)
+                # Also include top-level results if present
+                results_list.extend(search_response.get("results", []))
+                search_response = {"results": results_list}
+            else:
+                search_response = self.client.search_hybrid(
+                    query=query,
+                    project_id=graph_id,
+                    limit=limit
+                )
 
             facts = []
             edges = []
@@ -629,9 +650,12 @@ class GraphToolsService:
         Returns:
             节点列表
         """
-        logger.info(f"获取图谱 {graph_id} 的所有节点...")
+        logger.info(f"获取图谱 {graph_id} 的所有节点 (source={self.source})...")
 
-        mg_nodes = self.client.list_all_nodes(project_id=graph_id)
+        if self.source == "mindgraph":
+            mg_nodes = self.client.list_all_graph_nodes()
+        else:
+            mg_nodes = self.client.list_all_nodes(project_id=graph_id)
 
         result = []
         for mg_node in mg_nodes:
@@ -652,20 +676,25 @@ class GraphToolsService:
         logger.info(f"获取到 {len(result)} 个节点")
         return result
 
-    def get_all_edges(self, graph_id: str, include_temporal: bool = True) -> List[EdgeInfo]:
+    def get_all_edges(self, graph_id: str, include_temporal: bool = True,
+                      _raw_nodes: list = None) -> List[EdgeInfo]:
         """
         获取图谱的所有边（自动分页获取）
 
         Args:
             graph_id: 图谱ID（项目ID）
             include_temporal: 是否包含时间信息（保留参数以兼容调用方；MindGraph边不含时间字段）
+            _raw_nodes: 预获取的原始MindGraph节点（connect模式下避免重复查询）
 
         Returns:
             边列表
         """
-        logger.info(f"获取图谱 {graph_id} 的所有边...")
+        logger.info(f"获取图谱 {graph_id} 的所有边 (source={self.source})...")
 
-        mg_edges = self.client.list_all_edges(project_id=graph_id)
+        if self.source == "mindgraph":
+            mg_edges = self.client.list_all_graph_edges(nodes=_raw_nodes)
+        else:
+            mg_edges = self.client.list_all_edges(project_id=graph_id)
 
         result = []
         for mg_edge in mg_edges:

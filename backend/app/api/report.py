@@ -131,10 +131,12 @@ def generate_report():
                 )
                 
                 # 创建Report Agent
+                project_source = getattr(project, 'source', 'upload') or 'upload'
                 agent = ReportAgent(
                     graph_id=graph_id,
                     simulation_id=simulation_id,
-                    simulation_requirement=simulation_requirement
+                    simulation_requirement=simulation_requirement,
+                    source=project_source,
                 )
                 
                 # 进度回调
@@ -537,10 +539,12 @@ def chat_with_report_agent():
         simulation_requirement = project.simulation_requirement or ""
         
         # 创建Agent并进行对话
+        project_source = getattr(project, 'source', 'upload') or 'upload'
         agent = ReportAgent(
             graph_id=graph_id,
             simulation_id=simulation_id,
-            simulation_requirement=simulation_requirement
+            simulation_requirement=simulation_requirement,
+            source=project_source,
         )
         
         result = agent.chat(message=message, chat_history=chat_history)

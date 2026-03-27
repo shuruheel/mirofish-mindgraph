@@ -20,7 +20,7 @@
           </div>
           
           <h1 class="main-title">
-            上传任意报告<br>
+            连接知识图谱<br>
             <span class="gradient-text">即刻推演未来</span>
           </h1>
           
@@ -82,8 +82,8 @@
               <div class="workflow-item">
                 <span class="step-num">01</span>
                 <div class="step-info">
-                  <div class="step-title">图谱构建</div>
-                  <div class="step-desc">现实种子提取 & 个体与群体记忆注入 & GraphRAG构建</div>
+                  <div class="step-title">知识图谱</div>
+                  <div class="step-desc">连接已有MindGraph图谱或上传文档自动构建 & GraphRAG</div>
                 </div>
               </div>
               <div class="workflow-item">
@@ -121,14 +121,34 @@
         <!-- 右栏：交互控制台 -->
         <div class="right-panel">
           <div class="console-box">
-            <!-- 上传区域 -->
-            <div class="console-section">
+            <!-- 模式切换 -->
+            <div class="console-section mode-section">
+              <div class="mode-switcher">
+                <button
+                  class="mode-btn"
+                  :class="{ active: mode === 'upload' }"
+                  @click="mode = 'upload'"
+                >
+                  上传文档
+                </button>
+                <button
+                  class="mode-btn"
+                  :class="{ active: mode === 'connect' }"
+                  @click="mode = 'connect'"
+                >
+                  连接 MindGraph
+                </button>
+              </div>
+            </div>
+
+            <!-- 上传区域 (仅上传模式) -->
+            <div v-if="mode === 'upload'" class="console-section">
               <div class="console-header">
                 <span class="console-label">01 / 现实种子</span>
                 <span class="console-meta">支持格式: PDF, MD, TXT</span>
               </div>
-              
-              <div 
+
+              <div
                 class="upload-zone"
                 :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0 }"
                 @dragover.prevent="handleDragOver"
@@ -145,19 +165,34 @@
                   style="display: none"
                   :disabled="loading"
                 />
-                
+
                 <div v-if="files.length === 0" class="upload-placeholder">
                   <div class="upload-icon">↑</div>
                   <div class="upload-title">拖拽文件上传</div>
                   <div class="upload-hint">或点击浏览文件系统</div>
                 </div>
-                
+
                 <div v-else class="file-list">
                   <div v-for="(file, index) in files" :key="index" class="file-item">
                     <span class="file-icon">📄</span>
                     <span class="file-name">{{ file.name }}</span>
                     <button @click.stop="removeFile(index)" class="remove-btn">×</button>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 连接 MindGraph 说明 (仅连接模式) -->
+            <div v-if="mode === 'connect'" class="console-section">
+              <div class="console-header">
+                <span class="console-label">01 / 已有知识图谱</span>
+                <span class="console-meta">MindGraph Cloud</span>
+              </div>
+              <div class="connect-info">
+                <div class="connect-icon">&#x26A1;</div>
+                <div class="connect-text">
+                  <div class="connect-title">直接连接已有 MindGraph 知识图谱</div>
+                  <div class="connect-desc">跳过文档上传和图谱构建，直接从已有知识图谱中提取实体并生成模拟Agent</div>
                 </div>
               </div>
             </div>
@@ -171,6 +206,7 @@
             <div class="console-section">
               <div class="console-header">
                 <span class="console-label">>_ 02 / 模拟提示词</span>
+                <span v-if="mode === 'connect'" class="console-meta">可选</span>
               </div>
               <div class="input-wrapper">
                 <textarea
@@ -186,12 +222,12 @@
 
             <!-- 启动按钮 -->
             <div class="console-section btn-section">
-              <button 
+              <button
                 class="start-engine-btn"
                 @click="startSimulation"
                 :disabled="!canSubmit || loading"
               >
-                <span v-if="!loading">启动引擎</span>
+                <span v-if="!loading">{{ mode === 'connect' ? '连接并启动' : '启动引擎' }}</span>
                 <span v-else>初始化中...</span>
                 <span class="btn-arrow">→</span>
               </button>
@@ -210,8 +246,12 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import HistoryDatabase from '../components/HistoryDatabase.vue'
+import { connectMindGraph } from '../api/graph'
 
 const router = useRouter()
+
+// 模式: 'upload' (上传文档) 或 'connect' (连接已有MindGraph)
+const mode = ref('connect')
 
 // 表单数据
 const formData = ref({
@@ -231,6 +271,9 @@ const fileInput = ref(null)
 
 // 计算属性:是否可以提交
 const canSubmit = computed(() => {
+  if (mode.value === 'connect') {
+    return true  // 连接模式下无需文件，模拟需求也可选
+  }
   return formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
 })
 
@@ -288,20 +331,40 @@ const scrollToBottom = () => {
   })
 }
 
-// 开始模拟 - 立即跳转，API调用在Process页面进行
-const startSimulation = () => {
+// 开始模拟
+const startSimulation = async () => {
   if (!canSubmit.value || loading.value) return
-  
-  // 存储待上传的数据
-  import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
+
+  if (mode.value === 'connect') {
+    // 连接模式：调用后端API创建项目，然后跳转
+    try {
+      loading.value = true
+      const res = await connectMindGraph({
+        simulation_requirement: formData.value.simulationRequirement || '',
+        project_name: 'MindGraph Connection'
+      })
+      if (res.success) {
+        router.push({
+          name: 'Process',
+          params: { projectId: res.data.project_id }
+        })
+      } else {
+        error.value = res.error || '连接MindGraph失败'
+      }
+    } catch (err) {
+      error.value = err.message
+    } finally {
+      loading.value = false
+    }
+  } else {
+    // 上传模式：存储待上传数据，跳转到Process页面
+    const { setPendingUpload } = await import('../store/pendingUpload.js')
     setPendingUpload(files.value, formData.value.simulationRequirement)
-    
-    // 立即跳转到Process页面（使用特殊标识表示新建项目）
     router.push({
       name: 'Process',
       params: { projectId: 'new' }
     })
-  })
+  }
 }
 </script>
 
@@ -672,6 +735,64 @@ const startSimulation = () => {
 
 .console-section {
   padding: 20px;
+}
+
+.mode-section {
+  padding-bottom: 0;
+}
+
+.mode-switcher {
+  display: flex;
+  border: 1px solid var(--border);
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 10px 16px;
+  border: none;
+  background: #FAFAFA;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #999;
+}
+
+.mode-btn.active {
+  background: var(--black);
+  color: var(--white);
+}
+
+.mode-btn:not(.active):hover {
+  background: #F0F0F0;
+  color: var(--black);
+}
+
+.connect-info {
+  border: 1px dashed #CCC;
+  padding: 30px 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  background: #FAFAFA;
+}
+
+.connect-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.connect-title {
+  font-weight: 520;
+  font-size: 0.95rem;
+  margin-bottom: 6px;
+}
+
+.connect-desc {
+  font-size: 0.85rem;
+  color: var(--gray-text);
+  line-height: 1.5;
 }
 
 .console-section.btn-section {

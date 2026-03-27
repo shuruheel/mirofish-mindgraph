@@ -234,7 +234,8 @@ class SimulationManager:
         defined_entity_types: Optional[List[str]] = None,
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
-        parallel_profile_count: int = 3
+        parallel_profile_count: int = 20,
+        source: str = "upload"
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -280,7 +281,8 @@ class SimulationManager:
             filtered = reader.filter_defined_entities(
                 graph_id=state.graph_id,
                 defined_entity_types=defined_entity_types,
-                enrich_with_edges=True
+                enrich_with_edges=True,
+                source=source
             )
             
             state.entities_count = filtered.filtered_count
@@ -312,7 +314,7 @@ class SimulationManager:
                 )
             
             # 传入graph_id以启用MindGraph检索功能，获取更丰富的上下文
-            generator = OasisProfileGenerator(graph_id=state.graph_id)
+            generator = OasisProfileGenerator(graph_id=state.graph_id, source=source)
             
             def profile_progress(current, total, msg):
                 if progress_callback:
@@ -380,62 +382,70 @@ class SimulationManager:
                     total=len(profiles)
                 )
             
-            # ========== 阶段3: LLM智能生成模拟配置 ==========
-            if progress_callback:
-                progress_callback(
-                    "generating_config", 0, 
-                    "正在分析模拟需求...",
-                    current=0,
-                    total=3
-                )
-            
-            config_generator = SimulationConfigGenerator()
-            
-            if progress_callback:
-                progress_callback(
-                    "generating_config", 30, 
-                    "正在调用LLM生成配置...",
-                    current=1,
-                    total=3
-                )
-            
-            sim_params = config_generator.generate_config(
-                simulation_id=simulation_id,
-                project_id=state.project_id,
-                graph_id=state.graph_id,
-                simulation_requirement=simulation_requirement,
-                document_text=document_text,
-                entities=filtered.entities,
-                enable_twitter=state.enable_twitter,
-                enable_reddit=state.enable_reddit
-            )
-            
-            if progress_callback:
-                progress_callback(
-                    "generating_config", 70, 
-                    "正在保存配置文件...",
-                    current=2,
-                    total=3
-                )
-            
-            # 保存配置文件
+            # ========== 阶段3: LLM智能生成模拟配置（支持断点续传） ==========
             config_path = os.path.join(sim_dir, "simulation_config.json")
-            with open(config_path, 'w', encoding='utf-8') as f:
-                f.write(sim_params.to_json())
-            
-            state.config_generated = True
-            state.config_reasoning = sim_params.generation_reasoning
-            
-            if progress_callback:
-                progress_callback(
-                    "generating_config", 100, 
-                    "配置生成完成",
-                    current=3,
-                    total=3
+
+            if os.path.exists(config_path) and os.path.getsize(config_path) > 100:
+                # Config already generated (previous run completed phase 3) — skip
+                logger.info("配置文件已存在，跳过配置生成阶段")
+                if progress_callback:
+                    progress_callback("generating_config", 100, "配置已存在，跳过",
+                                      current=1, total=1)
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    import json as _json
+                    config_data = _json.load(f)
+                # Reconstruct SimulationParameters minimally for phase 4
+                from .simulation_config_generator import SimulationParameters, AgentActivityConfig
+                sim_params = SimulationParameters(
+                    simulation_id=simulation_id,
+                    project_id=state.project_id,
+                    graph_id=state.graph_id,
+                    simulation_requirement=simulation_requirement,
+                    generation_reasoning=config_data.get("generation_reasoning", ""),
                 )
-            
+                sim_params.agent_configs = [
+                    AgentActivityConfig(**ac) for ac in config_data.get("agent_configs", [])
+                ]
+            else:
+                num_agent_batches = (len(filtered.entities) + 14) // 15  # ceil(n/15)
+                total_config_steps = 3 + num_agent_batches
+
+                def config_progress(step, total, msg):
+                    if progress_callback:
+                        progress_callback("generating_config",
+                                          int(step / total * 100), msg,
+                                          current=step, total=total)
+
+                config_generator = SimulationConfigGenerator()
+                sim_params = config_generator.generate_config(
+                    simulation_id=simulation_id,
+                    project_id=state.project_id,
+                    graph_id=state.graph_id,
+                    simulation_requirement=simulation_requirement,
+                    document_text=document_text,
+                    entities=filtered.entities,
+                    enable_twitter=state.enable_twitter,
+                    enable_reddit=state.enable_reddit,
+                    progress_callback=config_progress,
+                    checkpoint_dir=sim_dir,
+                )
+
+                # 保存配置文件
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    f.write(sim_params.to_json())
+
+                if progress_callback:
+                    progress_callback("generating_config", 100, "配置生成完成",
+                                      current=1, total=1)
+
+            state.config_generated = True
+            state.config_reasoning = getattr(sim_params, 'generation_reasoning', '')
+            self._save_simulation_state(state)
+
             # ========== 阶段4: 注册认知结构 + Agent节点到MindGraph ==========
-            if Config.MINDGRAPH_API_KEY:
+            # Idempotent: skip if agent_node_uids.json already exists from a previous run
+            uids_path = os.path.join(sim_dir, "agent_node_uids.json")
+            if Config.MINDGRAPH_API_KEY and not os.path.exists(uids_path):
                 try:
                     from ..utils.mindgraph_client import MindGraphClient
                     mg_client = MindGraphClient()
@@ -447,9 +457,11 @@ class SimulationManager:
                     )
                     logger.info(f"已注册预测假说: {simulation_requirement[:50]}...")
 
-                    # 为每个Agent创建Agent节点 + 为非中立Agent创建Goal节点
+                    # 使用 find_or_create_entity 确保幂等（避免重试时重复创建）
                     agent_node_uids = {}  # agent_name → agent_node_uid
                     goals_created = 0
+
+                    # Batch: collect all agent data first, then create nodes
                     for agent_config in sim_params.agent_configs:
                         name = agent_config.entity_name
                         stance = getattr(agent_config, 'stance', 'neutral')
@@ -457,17 +469,19 @@ class SimulationManager:
                         influence = getattr(agent_config, 'influence_weight', 1.0)
                         entity_type = getattr(agent_config, 'entity_type', '')
 
-                        # 创建Agent节点
+                        # find_or_create_entity is idempotent — returns existing node if name matches
                         try:
-                            result = mg_client.register_agent_node(
+                            result = mg_client.create_entity(
                                 name=name,
+                                entity_type="SimulationAgent",
                                 project_id=state.graph_id,
-                                summary=f"{entity_type}: {stance} stance, sentiment={sentiment}",
+                                description=f"{entity_type}: {stance} stance, sentiment={sentiment}",
                                 props={
                                     "entity_type": entity_type,
                                     "stance": stance,
                                     "sentiment_bias": sentiment,
                                     "influence_weight": influence,
+                                    "simulation_id": simulation_id,
                                 },
                             )
                             uid = result.get("uid", "")
@@ -510,13 +524,14 @@ class SimulationManager:
                     # 保存agent_node_uids映射到模拟目录
                     if agent_node_uids:
                         import json as _json
-                        uids_path = os.path.join(sim_dir, "agent_node_uids.json")
                         with open(uids_path, 'w', encoding='utf-8') as f:
                             _json.dump(agent_node_uids, f, ensure_ascii=False)
                         logger.info(f"Agent节点映射已保存: {uids_path}")
 
                 except Exception as e:
                     logger.warning(f"注册认知结构失败（不影响模拟）: {e}")
+            elif os.path.exists(uids_path):
+                logger.info(f"Agent节点映射已存在，跳过认知结构注册: {uids_path}")
 
             # 注意：运行脚本保留在 backend/scripts/ 目录，不再复制到模拟目录
             # 启动模拟时，simulation_runner 会从 scripts/ 目录运行脚本

@@ -85,10 +85,16 @@ Click the image to watch MiroFish's deep prediction of the lost ending based on 
 
 ## 🔄 Workflow
 
-1. **Graph Building**: Seed extraction & Individual/collective memory injection & GraphRAG construction
-2. **Environment Setup**: Entity relationship extraction & Persona generation & Agent configuration injection
-3. **Simulation**: Dual-platform parallel simulation & Auto-parse prediction requirements & Dynamic temporal memory updates
-4. **Report Generation**: ReportAgent with rich toolset for deep interaction with post-simulation environment
+MiroFish supports two launch modes:
+
+**Mode A — Upload Documents**: Upload seed materials (PDF/MD/TXT), MindGraph automatically builds a knowledge graph, then enter simulation.
+
+**Mode B — Connect to MindGraph**: Skip document upload and connect directly to an existing [MindGraph Cloud](https://mindgraph.cloud) knowledge graph. Ideal for users who have already built their graph via MindGraph.
+
+1. **Graph Building** (Mode A) / **Graph Connect** (Mode B): Seed extraction & MindGraph cognitive graph construction / Direct connection to existing graph
+2. **Environment Setup**: Entity extraction & GraphRAG-enhanced persona generation & LLM-driven simulation config
+3. **Simulation**: Dual-platform parallel simulation & Agent activity written back to MindGraph in real-time (claims, decisions, anomaly detection) & Salience decay for memory fading
+4. **Report Generation**: ReportAgent queries the post-simulation graph via MindGraph retrieval tools (InsightForge/PanoramaSearch)
 5. **Deep Interaction**: Chat with any agent in the simulated world & Interact with ReportAgent
 
 ## 🚀 Quick Start
@@ -122,9 +128,10 @@ LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL_NAME=qwen-plus
 
-# Zep Cloud Configuration
-# Free monthly quota is sufficient for simple usage: https://app.getzep.com/
-ZEP_API_KEY=your_zep_api_key
+# MindGraph Cloud Configuration (knowledge graph storage & cognitive retrieval)
+# Register for an API Key: https://mindgraph.cloud/dashboard/keys
+MINDGRAPH_API_KEY=your_mindgraph_api_key
+MINDGRAPH_BASE_URL=https://api.mindgraph.cloud
 ```
 
 #### 2. Install Dependencies
@@ -190,7 +197,8 @@ The MiroFish team is recruiting full-time/internship positions. If you're intere
 
 **MiroFish has received strategic support and incubation from Shanda Group!**
 
-MiroFish's simulation engine is powered by **[OASIS (Open Agent Social Interaction Simulations)](https://github.com/camel-ai/oasis)**, We sincerely thank the CAMEL-AI team for their open-source contributions!
+- Simulation engine powered by **[OASIS](https://github.com/camel-ai/oasis)** (CAMEL-AI)
+- Knowledge graph & cognitive memory powered by **[MindGraph Cloud](https://mindgraph.cloud)** (replacing the previous Zep Cloud integration), providing 6-layer cognitive architecture, GraphRAG retrieval, salience decay, and more
 
 ## 📈 Project Statistics
 

@@ -12,6 +12,7 @@
 
 import json
 import math
+import os
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -250,10 +251,11 @@ class SimulationConfigGenerator:
         enable_twitter: bool = True,
         enable_reddit: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        checkpoint_dir: Optional[str] = None,
     ) -> SimulationParameters:
         """
-        智能生成完整的模拟配置（分步生成）
-        
+        智能生成完整的模拟配置（分步生成，支持断点续传）
+
         Args:
             simulation_id: 模拟ID
             project_id: 项目ID
@@ -264,58 +266,113 @@ class SimulationConfigGenerator:
             enable_twitter: 是否启用Twitter
             enable_reddit: 是否启用Reddit
             progress_callback: 进度回调函数(current_step, total_steps, message)
-            
+            checkpoint_dir: 检查点目录（模拟目录），用于断点续传
+
         Returns:
             SimulationParameters: 完整的模拟参数
         """
         logger.info(f"开始智能生成模拟配置: simulation_id={simulation_id}, 实体数={len(entities)}")
-        
+
         # 计算总步骤数
         num_batches = math.ceil(len(entities) / self.AGENTS_PER_BATCH)
         total_steps = 3 + num_batches  # 时间配置 + 事件配置 + N批Agent + 平台配置
         current_step = 0
-        
+
         def report_progress(step: int, message: str):
             nonlocal current_step
             current_step = step
             if progress_callback:
                 progress_callback(step, total_steps, message)
             logger.info(f"[{step}/{total_steps}] {message}")
-        
+
+        # ========== 断点续传：加载检查点 ==========
+        checkpoint_path = None
+        checkpoint_data = {}
+        if checkpoint_dir:
+            checkpoint_path = os.path.join(checkpoint_dir, "config_checkpoint.json")
+            if os.path.exists(checkpoint_path):
+                try:
+                    with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                        checkpoint_data = json.load(f)
+                    logger.info(f"已加载配置检查点: completed_step={checkpoint_data.get('completed_step', 0)}, "
+                               f"agent_batches={checkpoint_data.get('completed_agent_batches', 0)}")
+                except Exception as e:
+                    logger.warning(f"加载配置检查点失败: {e}")
+                    checkpoint_data = {}
+
+        def save_checkpoint(step: int, data: dict):
+            """Save progress checkpoint to disk."""
+            if not checkpoint_path:
+                return
+            try:
+                data["completed_step"] = step
+                with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning(f"保存配置检查点失败: {e}")
+
+        completed_step = checkpoint_data.get("completed_step", 0)
+
         # 1. 构建基础上下文信息
         context = self._build_context(
             simulation_requirement=simulation_requirement,
             document_text=document_text,
             entities=entities
         )
-        
+
         reasoning_parts = []
-        
+
         # ========== 步骤1: 生成时间配置 ==========
-        report_progress(1, "生成时间配置...")
+        if completed_step >= 1 and "time_config" in checkpoint_data:
+            logger.info("[1/...] 从检查点恢复时间配置")
+            time_config_result = checkpoint_data["time_config"]
+        else:
+            report_progress(1, "生成时间配置...")
+            num_entities = len(entities)
+            time_config_result = self._generate_time_config(context, num_entities)
+            save_checkpoint(1, {**checkpoint_data, "time_config": time_config_result})
+
         num_entities = len(entities)
-        time_config_result = self._generate_time_config(context, num_entities)
         time_config = self._parse_time_config(time_config_result, num_entities)
         reasoning_parts.append(f"时间配置: {time_config_result.get('reasoning', '成功')}")
-        
+
         # ========== 步骤2: 生成事件配置 ==========
-        report_progress(2, "生成事件配置和热点话题...")
-        event_config_result = self._generate_event_config(context, simulation_requirement, entities)
+        if completed_step >= 2 and "event_config" in checkpoint_data:
+            logger.info("[2/...] 从检查点恢复事件配置")
+            event_config_result = checkpoint_data["event_config"]
+        else:
+            report_progress(2, "生成事件配置和热点话题...")
+            event_config_result = self._generate_event_config(context, simulation_requirement, entities)
+            save_checkpoint(2, {**checkpoint_data, "time_config": time_config_result,
+                               "event_config": event_config_result})
+
         event_config = self._parse_event_config(event_config_result)
         reasoning_parts.append(f"事件配置: {event_config_result.get('reasoning', '成功')}")
-        
+
         # ========== 步骤3-N: 分批生成Agent配置 ==========
+        # Resume: load already-completed agent config batches from checkpoint
+        completed_agent_batches = checkpoint_data.get("completed_agent_batches", 0)
+        all_agent_configs_raw = checkpoint_data.get("agent_configs_raw", [])
+
         all_agent_configs = []
+        # Rebuild AgentActivityConfig objects from checkpoint data
+        for raw in all_agent_configs_raw:
+            all_agent_configs.append(AgentActivityConfig(**raw))
+
         for batch_idx in range(num_batches):
             start_idx = batch_idx * self.AGENTS_PER_BATCH
             end_idx = min(start_idx + self.AGENTS_PER_BATCH, len(entities))
             batch_entities = entities[start_idx:end_idx]
-            
+
+            if batch_idx < completed_agent_batches:
+                logger.info(f"[{3 + batch_idx}/{total_steps}] 从检查点跳过 Agent配置 ({start_idx + 1}-{end_idx}/{len(entities)})")
+                continue
+
             report_progress(
                 3 + batch_idx,
                 f"生成Agent配置 ({start_idx + 1}-{end_idx}/{len(entities)})..."
             )
-            
+
             batch_configs = self._generate_agent_configs_batch(
                 context=context,
                 entities=batch_entities,
@@ -323,15 +380,24 @@ class SimulationConfigGenerator:
                 simulation_requirement=simulation_requirement
             )
             all_agent_configs.extend(batch_configs)
-        
+
+            # Save checkpoint after each batch
+            all_agent_configs_raw = [asdict(c) for c in all_agent_configs]
+            save_checkpoint(2 + batch_idx + 1, {
+                "time_config": time_config_result,
+                "event_config": event_config_result,
+                "completed_agent_batches": batch_idx + 1,
+                "agent_configs_raw": all_agent_configs_raw,
+            })
+
         reasoning_parts.append(f"Agent配置: 成功生成 {len(all_agent_configs)} 个")
-        
+
         # ========== 为初始帖子分配发布者 Agent ==========
         logger.info("为初始帖子分配合适的发布者 Agent...")
         event_config = self._assign_initial_post_agents(event_config, all_agent_configs)
         assigned_count = len([p for p in event_config.initial_posts if p.get("poster_agent_id") is not None])
         reasoning_parts.append(f"初始帖子分配: {assigned_count} 个帖子已分配发布者")
-        
+
         # ========== 最后一步: 生成平台配置 ==========
         report_progress(total_steps, "生成平台配置...")
         twitter_config = None
@@ -374,7 +440,15 @@ class SimulationConfigGenerator:
         )
         
         logger.info(f"模拟配置生成完成: {len(params.agent_configs)} 个Agent配置")
-        
+
+        # Clean up checkpoint file on successful completion
+        if checkpoint_path:
+            try:
+                if os.path.exists(checkpoint_path):
+                    os.remove(checkpoint_path)
+            except Exception:
+                pass
+
         return params
     
     def _build_context(

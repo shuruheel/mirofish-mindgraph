@@ -920,24 +920,26 @@ class ReportAgent:
         simulation_id: str,
         simulation_requirement: str,
         llm_client: Optional[LLMClient] = None,
-        graph_tools: Optional[GraphToolsService] = None
+        graph_tools: Optional[GraphToolsService] = None,
+        source: str = "upload",
     ):
         """
         初始化Report Agent
-        
+
         Args:
             graph_id: 图谱ID
             simulation_id: 模拟ID
             simulation_requirement: 模拟需求描述
             llm_client: LLM客户端（可选）
             graph_tools: 图谱工具服务（可选）
+            source: 项目来源 "upload" 或 "mindgraph"
         """
         self.graph_id = graph_id
         self.simulation_id = simulation_id
         self.simulation_requirement = simulation_requirement
-        
+
         self.llm = llm_client or LLMClient()
-        self.graph_tools = graph_tools or GraphToolsService()
+        self.graph_tools = graph_tools or GraphToolsService(source=source)
         
         # 工具定义
         self.tools = self._define_tools()

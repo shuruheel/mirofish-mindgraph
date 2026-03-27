@@ -201,9 +201,13 @@ class GraphMemoryUpdater:
     NEGATIVE_MARKERS = {"反对", "错误", "不同意", "反驳", "批评", "失败", "糟糕", "不行"}
 
     def __init__(self, graph_id: str, minutes_per_round: int = 60,
-                 agent_node_uids: Optional[Dict[str, str]] = None):
+                 agent_node_uids: Optional[Dict[str, str]] = None,
+                 source: str = "upload",
+                 simulation_dir: Optional[str] = None):
         self.graph_id = graph_id
         self.minutes_per_round = minutes_per_round
+        self.source = source
+        self._simulation_dir = simulation_dir
 
         if not Config.MINDGRAPH_API_KEY:
             raise ValueError("MINDGRAPH_API_KEY未配置")
@@ -238,14 +242,51 @@ class GraphMemoryUpdater:
         self._failed_count = 0
         self._skipped_count = 0
 
-        logger.info(f"GraphMemoryUpdater 初始化完成: graph_id={graph_id}, batch_size={self.BATCH_SIZE}")
+        logger.info(f"GraphMemoryUpdater 初始化完成: graph_id={graph_id}, source={source}, batch_size={self.BATCH_SIZE}")
 
     def _get_platform_display_name(self, platform: str) -> str:
         return self.PLATFORM_DISPLAY_NAMES.get(platform.lower(), platform)
 
+    def _session_uid_path(self) -> Optional[str]:
+        """Path to persist session_uid for recovery after restart."""
+        if self._simulation_dir:
+            return os.path.join(self._simulation_dir, "mindgraph_session_uid.txt")
+        return None
+
+    def _save_session_uid(self):
+        path = self._session_uid_path()
+        if path and self._session_uid:
+            try:
+                with open(path, 'w') as f:
+                    f.write(self._session_uid)
+            except Exception:
+                pass
+
+    def _close_orphaned_session(self):
+        """Attempt to close a session left over from a previous run."""
+        path = self._session_uid_path()
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, 'r') as f:
+                old_uid = f.read().strip()
+            if old_uid:
+                self.client.close_session(old_uid, project_id=self.graph_id)
+                logger.info(f"已关闭孤立MindGraph会话: {old_uid}")
+        except Exception as e:
+            logger.debug(f"关闭孤立会话失败（可能已过期）: {e}")
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
     def start(self):
         if self._running:
             return
+
+        # Close any orphaned session from a previous run (e.g. after server restart)
+        self._close_orphaned_session()
 
         # 打开MindGraph会话 — 包裹整个模拟生命周期
         try:
@@ -253,6 +294,7 @@ class GraphMemoryUpdater:
                 project_id=self.graph_id,
                 session_name=f"Simulation {self.graph_id}"
             )
+            self._save_session_uid()
             logger.info(f"MindGraph会话已打开: session_uid={self._session_uid}")
         except Exception as e:
             logger.warning(f"打开MindGraph会话失败（将降级为纯文本摄入）: {e}")
@@ -497,7 +539,15 @@ class GraphMemoryUpdater:
 
         在每轮结束时由simulation_runner调用。
         half_life设为3倍轮时长，即信息在~3轮后衰减到50%。
+
+        SKIPPED for source="mindgraph" (connect mode) because decay() is
+        a global operation — it would degrade salience across the user's
+        entire existing MindGraph graph, not just simulation-created nodes.
         """
+        if self.source == "mindgraph":
+            logger.debug(f"跳过轮间衰减 (connect mode): round={round_num}")
+            return
+
         half_life_secs = self.minutes_per_round * 60 * 3
         try:
             self.client.decay_salience(
@@ -670,7 +720,9 @@ class GraphMemoryManager:
     @classmethod
     def create_updater(cls, simulation_id: str, graph_id: str,
                        minutes_per_round: int = 60,
-                       agent_node_uids: Optional[Dict[str, str]] = None) -> GraphMemoryUpdater:
+                       agent_node_uids: Optional[Dict[str, str]] = None,
+                       source: str = "upload",
+                       simulation_dir: Optional[str] = None) -> GraphMemoryUpdater:
         with cls._lock:
             if simulation_id in cls._updaters:
                 cls._updaters[simulation_id].stop()
@@ -678,12 +730,14 @@ class GraphMemoryManager:
                 graph_id,
                 minutes_per_round=minutes_per_round,
                 agent_node_uids=agent_node_uids,
+                source=source,
+                simulation_dir=simulation_dir,
             )
             updater.start()
             cls._updaters[simulation_id] = updater
             logger.info(
                 f"创建图谱记忆更新器: simulation_id={simulation_id}, "
-                f"graph_id={graph_id}, agent_nodes={len(agent_node_uids or {})}"
+                f"graph_id={graph_id}, source={source}, agent_nodes={len(agent_node_uids or {})}"
             )
             return updater
 

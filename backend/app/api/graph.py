@@ -116,6 +116,71 @@ def reset_project(project_id: str):
     })
 
 
+# ============== 连接已有MindGraph图谱 ==============
+
+@graph_bp.route('/connect', methods=['POST'])
+def connect_mindgraph():
+    """
+    连接已有的MindGraph知识图谱（跳过文档上传和图谱构建）
+
+    MindGraph用户已经通过MindGraph Cloud构建了知识图谱，
+    此接口创建一个轻量级项目直接连接到已有图谱。
+
+    请求（JSON）：
+        {
+            "simulation_requirement": "可选的模拟需求描述",
+            "project_name": "可选的项目名称"
+        }
+
+    返回：
+        {
+            "success": true,
+            "data": {
+                "project_id": "proj_xxxx",
+                "source": "mindgraph",
+                "status": "graph_completed",
+                ...
+            }
+        }
+    """
+    try:
+        data = request.get_json() or {}
+
+        if not Config.MINDGRAPH_API_KEY:
+            return jsonify({
+                "success": False,
+                "error": "MINDGRAPH_API_KEY未配置"
+            }), 500
+
+        project_name = data.get('project_name', 'MindGraph Connection')
+        simulation_requirement = data.get('simulation_requirement', '')
+
+        # 创建轻量级项目
+        project = ProjectManager.create_project(name=project_name)
+        project.source = "mindgraph"
+        project.status = ProjectStatus.GRAPH_COMPLETED
+        project.simulation_requirement = simulation_requirement or None
+        # graph_id = project_id，用于模拟创建新节点时的命名空间隔离
+        project.graph_id = project.project_id
+
+        ProjectManager.save_project(project)
+
+        logger.info(f"MindGraph连接项目已创建: project_id={project.project_id}")
+
+        return jsonify({
+            "success": True,
+            "data": project.to_dict()
+        })
+
+    except Exception as e:
+        logger.error(f"创建MindGraph连接失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 # ============== 接口1：上传文件并生成本体 ==============
 
 @graph_bp.route('/ontology/generate', methods=['POST'])
@@ -565,6 +630,9 @@ def list_tasks():
 def get_graph_data(graph_id: str):
     """
     获取图谱数据（节点和边）
+
+    Query参数：
+        source: "upload"（按agent_id过滤）或 "mindgraph"（读取全量图谱），默认"upload"
     """
     try:
         if not Config.MINDGRAPH_API_KEY:
@@ -572,9 +640,10 @@ def get_graph_data(graph_id: str):
                 "success": False,
                 "error": "MINDGRAPH_API_KEY未配置"
             }), 500
-        
+
+        source = request.args.get('source', 'upload')
         builder = GraphBuilderService()
-        graph_data = builder.get_graph_data(graph_id)
+        graph_data = builder.get_graph_data(graph_id, source=source)
         
         return jsonify({
             "success": True,

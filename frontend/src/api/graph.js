@@ -48,12 +48,14 @@ export function getTaskStatus(taskId) {
 /**
  * 获取图谱数据
  * @param {String} graphId - 图谱ID
+ * @param {Object} params - 可选参数 { source: 'upload' | 'mindgraph' }
  * @returns {Promise}
  */
-export function getGraphData(graphId) {
+export function getGraphData(graphId, params = {}) {
   return service({
     url: `/api/graph/data/${graphId}`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -67,4 +69,19 @@ export function getProject(projectId) {
     url: `/api/graph/project/${projectId}`,
     method: 'get'
   })
+}
+
+/**
+ * 连接已有的MindGraph知识图谱（跳过文档上传和图谱构建）
+ * @param {Object} data - { simulation_requirement?, project_name? }
+ * @returns {Promise}
+ */
+export function connectMindGraph(data) {
+  return requestWithRetry(() =>
+    service({
+      url: '/api/graph/connect',
+      method: 'post',
+      data
+    })
+  )
 }

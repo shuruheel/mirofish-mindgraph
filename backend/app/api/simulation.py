@@ -209,19 +209,52 @@ def create_simulation():
         
         graph_id = data.get('graph_id') or project.graph_id
         if not graph_id:
-            return jsonify({
-                "success": False,
-                "error": "项目尚未构建图谱，请先调用 /api/graph/build"
-            }), 400
+            if project.source == "mindgraph":
+                # MindGraph连接模式：使用project_id作为graph_id（命名空间隔离）
+                graph_id = project.project_id
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "项目尚未构建图谱，请先调用 /api/graph/build"
+                }), 400
         
         manager = SimulationManager()
+
+        # Deduplicate: cancel less-progressed simulations for the same project
+        existing = manager.list_simulations(project_id=project_id)
+        active_statuses = {"created", "preparing", "ready", "running"}
+        active_sims = [s for s in existing if s.status.value in active_statuses]
+
+        if active_sims:
+            # Score by progress: running > ready > preparing > created
+            progress_order = {"running": 4, "ready": 3, "preparing": 2, "created": 1}
+            active_sims.sort(
+                key=lambda s: (progress_order.get(s.status.value, 0), s.profiles_count),
+                reverse=True
+            )
+            # Keep the most progressed, cancel the rest
+            best = active_sims[0]
+            for sim in active_sims[1:]:
+                logger.info(f"取消重复模拟: {sim.simulation_id} ({sim.status.value}, "
+                           f"profiles={sim.profiles_count}) — 保留 {best.simulation_id}")
+                sim.status = SimulationStatus.FAILED
+                sim.error = f"已被更高进度的模拟 {best.simulation_id} 替代"
+                manager._save_simulation_state(sim)
+
+            # Return existing best simulation instead of creating a new one
+            logger.info(f"复用已有模拟: {best.simulation_id} ({best.status.value})")
+            return jsonify({
+                "success": True,
+                "data": best.to_dict()
+            })
+
         state = manager.create_simulation(
             project_id=project_id,
             graph_id=graph_id,
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
         )
-        
+
         return jsonify({
             "success": True,
             "data": state.to_dict()
@@ -423,7 +456,33 @@ def prepare_simulation():
         # 检查是否强制重新生成
         force_regenerate = data.get('force_regenerate', False)
         logger.info(f"开始处理 /prepare 请求: simulation_id={simulation_id}, force_regenerate={force_regenerate}")
-        
+
+        # Guard: if already preparing, check if the thread is actually alive
+        if not force_regenerate and state.status == SimulationStatus.PREPARING:
+            # Verify the task thread is still running (survives server restart check)
+            task_manager_check = TaskManager()
+            active_tasks = [
+                t for t in task_manager_check.list_tasks()
+                if t.metadata.get("simulation_id") == simulation_id
+                and t.status in (TaskStatus.PENDING, TaskStatus.PROCESSING)
+            ]
+            if active_tasks:
+                logger.info(f"模拟 {simulation_id} 正在准备中（线程存活），跳过重复启动")
+                return jsonify({
+                    "success": True,
+                    "data": {
+                        "simulation_id": simulation_id,
+                        "status": "preparing",
+                        "message": "准备任务已在进行中",
+                        "already_prepared": False
+                    }
+                })
+            else:
+                # State says PREPARING but no active task — thread died (e.g. server restart)
+                logger.warning(f"模拟 {simulation_id} 状态为PREPARING但无活跃任务，重置状态以允许恢复")
+                state.status = SimulationStatus.CREATED
+                manager._save_simulation_state(state)
+
         # 检查是否已经准备完成（避免重复生成）
         if not force_regenerate:
             logger.debug(f"检查模拟 {simulation_id} 是否已准备完成...")
@@ -452,31 +511,37 @@ def prepare_simulation():
                 "error": f"项目不存在: {state.project_id}"
             }), 404
         
-        # 获取模拟需求
+        # 获取模拟需求（MindGraph连接模式下可选）
         simulation_requirement = project.simulation_requirement or ""
-        if not simulation_requirement:
+        if not simulation_requirement and project.source != "mindgraph":
             return jsonify({
                 "success": False,
                 "error": "项目缺少模拟需求描述 (simulation_requirement)"
             }), 400
-        
-        # 获取文档文本
+        if not simulation_requirement:
+            simulation_requirement = "模拟社会群体互动与信息传播"
+
+        # 获取文档文本（MindGraph连接模式下无文档）
         document_text = ProjectManager.get_extracted_text(state.project_id) or ""
+
+        # 获取项目数据来源
+        project_source = project.source or "upload"
         
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
-        parallel_profile_count = data.get('parallel_profile_count', 5)
+        parallel_profile_count = data.get('parallel_profile_count', 20)
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
         try:
-            logger.info(f"同步获取实体数量: graph_id={state.graph_id}")
+            logger.info(f"同步获取实体数量: graph_id={state.graph_id}, source={project_source}")
             reader = EntityReader()
             # 快速读取实体（不需要边信息，只统计数量）
             filtered_preview = reader.filter_defined_entities(
                 graph_id=state.graph_id,
                 defined_entity_types=entity_types_list,
-                enrich_with_edges=False  # 不获取边信息，加快速度
+                enrich_with_edges=False,  # 不获取边信息，加快速度
+                source=project_source
             )
             # 保存实体数量到状态（供前端立即获取）
             state.entities_count = filtered_preview.filtered_count
@@ -582,7 +647,8 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    source=project_source
                 )
                 
                 # 任务完成
@@ -1540,9 +1606,24 @@ def start_simulation():
             if is_prepared:
                 # 准备工作已完成，检查是否有正在运行的进程
                 if state.status == SimulationStatus.RUNNING:
-                    # 检查模拟进程是否真的在运行
+                    # Check if the process is actually alive (survives server restart)
                     run_state = SimulationRunner.get_run_state(simulation_id)
+                    process_alive = False
                     if run_state and run_state.runner_status.value == "running":
+                        pid = run_state.process_pid
+                        if pid:
+                            try:
+                                os.kill(pid, 0)  # signal 0 = check existence
+                                process_alive = True
+                            except OSError:
+                                process_alive = False
+                        if not process_alive:
+                            # Stale RUNNING state — PID is dead (server restarted)
+                            logger.info(f"模拟 {simulation_id} 状态为 RUNNING 但进程 PID={pid} 已死亡，重置为 READY")
+                            run_state.runner_status = RunnerStatus.STOPPED
+                            SimulationRunner._save_run_state(run_state)
+
+                    if process_alive:
                         # 进程确实在运行
                         if force:
                             # 强制模式：停止运行中的模拟
@@ -1595,13 +1676,20 @@ def start_simulation():
             
             logger.info(f"启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
         
+        # 获取项目来源（用于图谱记忆更新的 source 参数）
+        project_source = "upload"
+        project = ProjectManager.get_project(state.project_id)
+        if project and getattr(project, 'source', None):
+            project_source = project.source
+
         # 启动模拟
         run_state = SimulationRunner.start_simulation(
             simulation_id=simulation_id,
             platform=platform,
             max_rounds=max_rounds,
             enable_graph_memory_update=enable_graph_memory_update,
-            graph_id=graph_id
+            graph_id=graph_id,
+            source=project_source,
         )
         
         # 更新模拟状态

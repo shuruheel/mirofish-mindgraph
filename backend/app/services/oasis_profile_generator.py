@@ -9,6 +9,7 @@ OASIS Agent Profile生成器
 """
 
 import json
+import os
 import random
 import time
 from typing import Dict, Any, List, Optional
@@ -182,11 +183,13 @@ class OasisProfileGenerator:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
-        graph_id: Optional[str] = None
+        graph_id: Optional[str] = None,
+        source: str = "upload"
     ):
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
         self.model_name = model_name or Config.LLM_MODEL_NAME
+        self.source = source
 
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
@@ -280,51 +283,48 @@ class OasisProfileGenerator:
         suffix = random.randint(100, 999)
         return f"{username}_{suffix}"
     
+    # Entities with this many related edges already have enough structural
+    # context from the graph — skip the RAG call to save latency and cost.
+    RAG_SKIP_EDGE_THRESHOLD = 3
+
     def _search_graph_for_entity(self, entity: EntityNode) -> Dict[str, Any]:
         """
-        使用MindGraph混合搜索获取实体相关的丰富信息
+        使用MindGraph语义检索获取实体的补充信息
+
+        仅在实体结构上下文不足时调用（相关边 < RAG_SKIP_EDGE_THRESHOLD）。
+        跳过原始文本块（include_chunks=False）以减少token和延迟。
 
         Args:
             entity: 实体节点对象
 
         Returns:
-            包含facts, node_summaries, context的字典
+            包含node_summaries, context的字典
         """
-        if not self.graph_client:
-            return {"facts": [], "node_summaries": [], "context": ""}
+        empty = {"node_summaries": [], "context": ""}
+
+        if not self.graph_client or not self.graph_id:
+            return empty
+
+        # Skip RAG for entities with sufficient structural context
+        edge_count = len(entity.related_edges) if entity.related_edges else 0
+        if edge_count >= self.RAG_SKIP_EDGE_THRESHOLD:
+            logger.debug(f"跳过RAG检索: {entity.name} 已有 {edge_count} 条边")
+            return empty
 
         entity_name = entity.name
-
-        results = {
-            "facts": [],
-            "node_summaries": [],
-            "context": ""
-        }
-
-        if not self.graph_id:
-            logger.debug(f"跳过图谱检索：未设置graph_id")
-            return results
-
-        comprehensive_query = f"关于{entity_name}的所有信息、活动、事件、关系和背景"
+        results = dict(empty)
 
         try:
-            # 使用graph-augmented RAG检索 — 返回匹配块+关联图谱节点
+            rag_project_id = None if self.source == "mindgraph" else self.graph_id
             ctx_result = self.graph_client.retrieve_context(
-                query=comprehensive_query,
-                project_id=self.graph_id,
-                k=10,
-                depth=1  # 1跳扩展，拉入直接关联实体
+                query=entity_name,
+                project_id=rag_project_id,
+                k=3,
+                depth=1,
+                include_chunks=False,
             )
 
-            # 提取事实和摘要
-            all_facts = set()
             all_summaries = set()
-
-            # 从chunks提取事实
-            for chunk in ctx_result.get("chunks", []):
-                content = chunk.get("content", "") or chunk.get("text", "")
-                if content:
-                    all_facts.add(content)
 
             # 从graph nodes提取摘要
             graph_data = ctx_result.get("graph", {})
@@ -336,27 +336,20 @@ class OasisProfileGenerator:
                 if name and name != entity_name:
                     all_summaries.add(f"相关实体: {name}")
 
-            # 回退：如果retrieve_context没有返回预期格式，尝试从results中提取
+            # 回退格式
             for item in ctx_result.get("results", []):
-                content = item.get("content", "") or item.get("label", "") or item.get("summary", "")
+                content = item.get("summary", "") or item.get("label", "")
                 if content:
-                    all_facts.add(content)
-                name = item.get("label", item.get("name", ""))
-                if name and name != entity_name:
-                    all_summaries.add(f"相关实体: {name}")
+                    all_summaries.add(content)
 
-            results["facts"] = list(all_facts)
             results["node_summaries"] = list(all_summaries)
 
-            # 构建综合上下文
-            context_parts = []
-            if results["facts"]:
-                context_parts.append("事实信息:\n" + "\n".join(f"- {f}" for f in results["facts"][:20]))
             if results["node_summaries"]:
-                context_parts.append("相关实体:\n" + "\n".join(f"- {s}" for s in results["node_summaries"][:10]))
-            results["context"] = "\n\n".join(context_parts)
+                results["context"] = "相关实体:\n" + "\n".join(
+                    f"- {s}" for s in results["node_summaries"][:10]
+                )
 
-            logger.info(f"图谱检索完成: {entity_name}, 获取 {len(results['facts'])} 条事实, {len(results['node_summaries'])} 个相关节点")
+            logger.debug(f"RAG检索: {entity_name}, {len(results['node_summaries'])} 个相关节点")
 
         except Exception as e:
             logger.warning(f"图谱检索失败 ({entity_name}): {e}")
@@ -404,35 +397,39 @@ class OasisProfileGenerator:
             if relationships:
                 context_parts.append("### 相关事实和关系\n" + "\n".join(relationships))
         
-        # 3. 添加关联节点的详细信息
+        # 3. 添加关联节点的详细信息（包括属性）
         if entity.related_nodes:
             related_info = []
             for node in entity.related_nodes:  # 不限制数量
                 node_name = node.get("name", "")
                 node_labels = node.get("labels", [])
                 node_summary = node.get("summary", "")
-                
+                node_attrs = node.get("attributes", {})
+
                 # 过滤掉默认标签
                 custom_labels = [l for l in node_labels if l not in ["Entity", "Node"]]
                 label_str = f" ({', '.join(custom_labels)})" if custom_labels else ""
-                
+
+                parts = [f"- **{node_name}**{label_str}"]
                 if node_summary:
-                    related_info.append(f"- **{node_name}**{label_str}: {node_summary}")
-                else:
-                    related_info.append(f"- **{node_name}**{label_str}")
-            
+                    parts.append(f": {node_summary}")
+
+                # 包含关键属性（description, entity_type等）
+                desc = node_attrs.get("description", "")
+                if desc and desc != node_summary:
+                    parts.append(f"\n  描述: {desc}")
+                node_et = node_attrs.get("entity_type", "")
+                if node_et:
+                    parts.append(f"\n  类型: {node_et}")
+
+                related_info.append("".join(parts))
+
             if related_info:
                 context_parts.append("### 关联实体信息\n" + "\n".join(related_info))
         
-        # 4. 使用图谱混合检索获取更丰富的信息
+        # 4. 补充RAG检索（仅在结构上下文不足时）
         graph_results = self._search_graph_for_entity(entity)
-        
-        if graph_results.get("facts"):
-            # 去重：排除已存在的事实
-            new_facts = [f for f in graph_results["facts"] if f not in existing_facts]
-            if new_facts:
-                context_parts.append("### 图谱检索到的事实信息\n" + "\n".join(f"- {f}" for f in new_facts[:15]))
-        
+
         if graph_results.get("node_summaries"):
             context_parts.append("### 图谱检索到的相关节点\n" + "\n".join(f"- {s}" for s in graph_results["node_summaries"][:10]))
         
@@ -898,17 +895,63 @@ class OasisProfileGenerator:
                 )
                 return idx, fallback_profile, str(e)
         
-        logger.info(f"开始并行生成 {total} 个Agent人设（并行数: {parallel_count}）...")
+        # ===== Resume: load existing partial profiles from disk =====
+        resumed_count = 0
+        if realtime_output_path and os.path.exists(realtime_output_path):
+            try:
+                with open(realtime_output_path, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+                if isinstance(existing_data, list) and existing_data:
+                    # Build a set of already-generated user_ids
+                    existing_ids = {p.get("user_id") for p in existing_data}
+                    for item in existing_data:
+                        uid = item.get("user_id")
+                        if uid is not None and 0 <= uid < total:
+                            profiles[uid] = OasisAgentProfile(
+                                user_id=uid,
+                                user_name=item.get("username", f"agent_{uid}"),
+                                name=item.get("name", ""),
+                                bio=item.get("bio", ""),
+                                persona=item.get("persona", ""),
+                                karma=item.get("karma", 1000),
+                                age=item.get("age"),
+                                gender=item.get("gender"),
+                                mbti=item.get("mbti"),
+                                country=item.get("country"),
+                                profession=item.get("profession"),
+                                interested_topics=item.get("interested_topics", []),
+                            )
+                            resumed_count += 1
+                    completed_count[0] = resumed_count
+                    logger.info(f"从磁盘恢复 {resumed_count}/{total} 个已有人设")
+            except Exception as e:
+                logger.warning(f"加载已有人设失败，将全部重新生成: {e}")
+                resumed_count = 0
+
+        # Only generate profiles for entities that don't have one yet
+        entities_to_generate = [
+            (idx, entity) for idx, entity in enumerate(entities)
+            if profiles[idx] is None
+        ]
+        remaining = len(entities_to_generate)
+
+        logger.info(f"开始并行生成 {remaining} 个Agent人设（跳过 {resumed_count} 个已有，并行数: {parallel_count}）...")
         print(f"\n{'='*60}")
-        print(f"开始生成Agent人设 - 共 {total} 个实体，并行数: {parallel_count}")
+        print(f"生成Agent人设 - 共 {total} 个实体，已有 {resumed_count}，待生成 {remaining}，并行数: {parallel_count}")
         print(f"{'='*60}\n")
-        
+
+        if progress_callback and resumed_count > 0:
+            progress_callback(
+                resumed_count, total,
+                f"从磁盘恢复 {resumed_count}/{total} 个已有人设"
+            )
+
         # 使用线程池并行执行
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_count) as executor:
-            # 提交所有任务
+            # 提交仅需生成的任务
             future_to_entity = {
                 executor.submit(generate_single_profile, idx, entity): (idx, entity)
-                for idx, entity in enumerate(entities)
+                for idx, entity in entities_to_generate
             }
             
             # 收集结果

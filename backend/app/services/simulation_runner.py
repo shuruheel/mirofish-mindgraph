@@ -315,7 +315,8 @@ class SimulationRunner:
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # 最大模拟轮数（可选，用于截断过长的模拟）
         enable_graph_memory_update: bool = False,  # 是否将活动更新到MindGraph图谱
-        graph_id: str = None  # MindGraph图谱ID（启用图谱更新时必需）
+        graph_id: str = None,  # MindGraph图谱ID（启用图谱更新时必需）
+        source: str = "upload",  # 项目来源（"upload" 或 "mindgraph"）
     ) -> SimulationRunState:
         """
         启动模拟
@@ -386,6 +387,8 @@ class SimulationRunner:
                     simulation_id, graph_id,
                     minutes_per_round=minutes_per_round,
                     agent_node_uids=agent_node_uids,
+                    source=source,
+                    simulation_dir=sim_dir,
                 )
                 cls._graph_memory_enabled[simulation_id] = True
                 logger.info(f"已启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")

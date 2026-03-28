@@ -566,12 +566,7 @@ class GraphMemoryUpdater:
         display_name = self._get_platform_display_name(platform)
         content = f"第{round_num}轮{display_name}模拟完成，共{actions_count}个动作"
         try:
-            from datetime import datetime
-            self.client.capture_observation(
-                content,
-                project_id=self.graph_id,
-                timestamp=datetime.now().isoformat(),
-            )
+            self.client.capture_observation(content, project_id=self.graph_id)
         except Exception as e:
             logger.debug(f"记录轮次观察失败: {e}")
 

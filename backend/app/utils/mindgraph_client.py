@@ -929,25 +929,22 @@ class MindGraphClient:
     # ═══════════════════════════════════════
 
     def capture_observation(self, content: str, project_id: str,
-                            observation_type: str = "simulation_event",
-                            timestamp: Optional[str] = None) -> Dict[str, Any]:
+                            observation_type: str = "simulation_event") -> Dict[str, Any]:
         """
         记录事实观察（Reality层）
 
-        Note: Observations do NOT accept session_uid — they belong to the
-        Reality layer, not Memory layer. Use Journal nodes for session-linked entries.
+        Note: Observations belong to the Reality layer. They do NOT accept
+        session_uid or timestamp in props — MindGraph auto-sets created_at.
+        Use Journal nodes (Memory layer) for session-linked timestamped entries.
         """
-        props = {
-            "content": content,
-            "observation_type": observation_type,
-        }
-        if timestamp:
-            props["timestamp"] = timestamp
         return self._with_retry(
             self._mg.capture,
             action="observation",
             label=content[:100],
-            props=props,
+            props={
+                "content": content,
+                "observation_type": observation_type,
+            },
             agent_id=project_id,
             operation_name=f"记录观察({observation_type})",
         )

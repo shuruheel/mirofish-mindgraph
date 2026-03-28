@@ -1,14 +1,18 @@
 """
 Graph Context Provider for simulation agents.
 
-Provides cached, scoped graph context to OASIS agents during simulation.
-Agents receive graph knowledge (relationships, claims, other agents' activity)
-injected into their observation prompt via monkey-patching.
+Provides graph context to OASIS agents during simulation via two mechanisms:
+1. Semantic retrieval: Per-turn queries against the full knowledge graph based
+   on what the agent is currently observing (posts, discussions). This surfaces
+   topically relevant knowledge — claims, evidence, entity relationships — that
+   helps agents make informed decisions.
+2. Simulation awareness: Cached lookups for related agents' recent activity
+   and simulation-wide decisions.
 
 Caching layers:
-- Session cache: Entity nodes + edges loaded once at sim start (~2-3s)
+- Session cache: Entity nodes + edges + relationship map loaded once (~2-3s)
 - Simulation cache: Journal/Decision nodes refreshed every N rounds (~1s)
-- Round cache: Per-query dedup within a round (~0ms)
+- Round cache: Per-agent-per-round dedup for semantic queries (~0ms)
 """
 
 import logging
@@ -25,8 +29,8 @@ RELATIONSHIP_EDGE_TYPES = {
 }
 
 # Max tokens of context to inject per agent per round
-MAX_CONTEXT_TOKENS = 500
-# Max characters (rough proxy for tokens)
+MAX_CONTEXT_TOKENS = 1500
+# Max characters (rough proxy for tokens — ~3 chars per token for mixed en/zh)
 MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * 3
 
 
@@ -213,19 +217,25 @@ class GraphContextProvider:
         """Clear per-round query cache. Called at start of each round."""
         self._round_cache.clear()
 
-    def get_agent_context(self, agent_name: str, round_num: int) -> str:
+    def get_agent_context(self, agent_name: str, round_num: int,
+                          observation_text: str = "") -> str:
         """
-        Get graph context for one agent. Returns a text block to inject
-        into the agent's observation prompt.
+        Get graph context for one agent based on their current observation.
+
+        Uses semantic retrieval against the full knowledge graph to find
+        topically relevant knowledge for what the agent is currently seeing,
+        then supplements with simulation activity awareness.
 
         Context includes:
-        1. Related agents' recent simulation activity
-        2. Key epistemic claims relevant to this agent
-        3. Recent simulation decisions
+        1. Semantically relevant knowledge from the graph (topic-aware)
+        2. Related agents' recent simulation activity
+        3. Recent simulation-wide decisions
 
         Args:
             agent_name: The agent's entity name
             round_num: Current simulation round
+            observation_text: The agent's current observation (posts they see).
+                Used as the basis for semantic retrieval queries.
 
         Returns:
             Context string (~500 tokens max), or empty string if no context
@@ -240,18 +250,25 @@ class GraphContextProvider:
         parts = []
         char_budget = MAX_CONTEXT_CHARS
 
-        # 1. Related agents' recent activity
+        # 1. Semantic retrieval from the full knowledge graph
+        if observation_text:
+            semantic_block = self._retrieve_semantic_context(
+                agent_name, observation_text, char_budget
+            )
+            if semantic_block:
+                parts.append(semantic_block)
+                char_budget -= len(semantic_block)
+
+        # 2. Related agents' recent activity (from simulation data)
         related = self._relationship_map.get(agent_name, set())
-        if related:
+        if related and char_budget > 200:
             activity_lines = []
             for related_name in list(related)[:5]:
                 journals = self._journals_by_agent.get(related_name, [])
                 if journals:
-                    # Most recent journal
                     latest = journals[-1]
                     props = latest.get("props", {})
                     content = props.get("content", "")
-                    # Trim "AgentName: " prefix
                     colon_idx = content.find(":")
                     if colon_idx > 0:
                         content = content[colon_idx + 1:].strip()
@@ -264,17 +281,6 @@ class GraphContextProvider:
                 if len(block) <= char_budget:
                     parts.append(block)
                     char_budget -= len(block)
-
-        # 2. Key claims about this agent from the knowledge graph
-        claims = self._claims_by_entity.get(agent_name, [])
-        if claims and char_budget > 200:
-            # Take top 3 most relevant (shortest = most specific)
-            sorted_claims = sorted(claims, key=len)[:3]
-            claim_lines = [f"- {c[:120]}" for c in sorted_claims]
-            block = "## Key knowledge about you\n" + "\n".join(claim_lines)
-            if len(block) <= char_budget:
-                parts.append(block)
-                char_budget -= len(block)
 
         # 3. Recent simulation-wide decisions (if any)
         if self._simulation_decisions and char_budget > 150:
@@ -292,6 +298,127 @@ class GraphContextProvider:
         context = "\n\n".join(parts)
         self._round_cache[cache_key] = context
         return context
+
+    @staticmethod
+    def _extract_post_content(observation_text: str) -> str:
+        """
+        Extract meaningful text content from the OASIS observation prompt.
+
+        The observation is structured as:
+            <groups env>
+            After refreshing, you see some posts <JSON array of post objects>
+            pick one you want to perform action...
+
+        The JSON posts use indent=4 formatting, so raw truncation wastes most
+        of the budget on JSON syntax. This method extracts just the post
+        content fields and user names for a focused semantic query.
+        """
+        import json as _json
+
+        # Find the JSON array in the observation
+        bracket_start = observation_text.find("[")
+        bracket_end = observation_text.rfind("]")
+        if bracket_start < 0 or bracket_end <= bracket_start:
+            # No JSON found — use raw text (trimmed of boilerplate)
+            return observation_text[:1000]
+
+        json_str = observation_text[bracket_start:bracket_end + 1]
+        try:
+            posts = _json.loads(json_str)
+        except (_json.JSONDecodeError, ValueError):
+            return observation_text[:1000]
+
+        # Extract user_name + content from each post
+        lines = []
+        for post in posts:
+            user = post.get("user_name", "")
+            content = post.get("content", "")
+            if content:
+                lines.append(f"{user}: {content}" if user else content)
+
+        return "\n".join(lines) if lines else observation_text[:1000]
+
+    def _retrieve_semantic_context(self, agent_name: str,
+                                   observation_text: str,
+                                   char_budget: int) -> str:
+        """
+        Query the full knowledge graph for content relevant to the agent's
+        current observation. Returns a formatted text block.
+
+        The query combines the agent's identity with the substance of the
+        posts they're seeing, so retrieval is both agent-aware and topic-aware.
+        """
+        # Extract post content from the structured observation
+        post_content = self._extract_post_content(observation_text)
+
+        # Build query: agent identity + post substance (capped for embedding model)
+        query = f"{agent_name}: {post_content[:1500]}"
+
+        try:
+            t0 = time.time()
+            result = self._client.retrieve_context(
+                query=query,
+                project_id=None,  # Unscoped — search the full knowledge graph
+                k=5,
+                depth=1,
+                include_chunks=True,  # Include source text passages for richer context
+            )
+            elapsed = time.time() - t0
+            logger.debug(f"Semantic retrieval for {agent_name}: {elapsed:.2f}s")
+
+            graph_data = result.get("graph", {})
+            nodes = graph_data.get("nodes", [])
+            edges = graph_data.get("edges", [])
+            chunks = result.get("chunks", [])
+
+            knowledge_lines = []
+            seen = set()
+
+            # Edges capture relationships as natural language facts
+            for edge in edges:
+                label = edge.get("label", "")
+                if label and label not in seen:
+                    knowledge_lines.append(f"- {label[:200]}")
+                    seen.add(label)
+
+            # Nodes provide entity context and claim summaries
+            for node in nodes:
+                summary = node.get("summary", "") or node.get("label", "")
+                node_type = node.get("node_type", "")
+                if summary and summary not in seen:
+                    prefix = f"[{node_type}] " if node_type else ""
+                    knowledge_lines.append(f"- {prefix}{summary[:200]}")
+                    seen.add(summary)
+
+            # Chunks provide original source text passages
+            for chunk in chunks:
+                content = chunk.get("content", "") or chunk.get("text", "")
+                if content and content[:80] not in seen:
+                    knowledge_lines.append(f"- [Source] {content[:250]}")
+                    seen.add(content[:80])
+
+            if not knowledge_lines:
+                return ""
+
+            # Cap to fit within budget
+            block = "## Relevant knowledge\n"
+            for line in knowledge_lines:
+                candidate = block + line + "\n"
+                if len(candidate) > char_budget:
+                    break
+                block = candidate
+
+            return block.rstrip()
+
+        except Exception as e:
+            logger.debug(f"Semantic retrieval failed for {agent_name}: {e}")
+            # Fallback: use cached claims about this agent (static, but better than nothing)
+            claims = self._claims_by_entity.get(agent_name, [])
+            if claims:
+                sorted_claims = sorted(claims, key=len)[:3]
+                claim_lines = [f"- {c[:120]}" for c in sorted_claims]
+                return "## Key knowledge about you\n" + "\n".join(claim_lines)
+            return ""
 
     def get_related_agents(self, agent_name: str) -> Set[str]:
         """

@@ -1090,7 +1090,7 @@ def init_graph_context(config: Dict[str, Any], simulation_dir: str,
         _graph_provider = provider
         _graph_agent_names.update(agent_names)
 
-        # Apply monkey-patch
+        # Apply monkey-patch — passes the observation text for semantic retrieval
         async def _graph_enhanced_to_text_prompt(self, **kwargs):
             original = await _original_to_text_prompt(self, **kwargs)
             if not _graph_provider:
@@ -1099,7 +1099,9 @@ def init_graph_context(config: Dict[str, Any], simulation_dir: str,
             if agent_id is None:
                 return original
             agent_name = _graph_agent_names.get(agent_id, f"Agent_{agent_id}")
-            context = _graph_provider.get_agent_context(agent_name, _graph_current_round[0])
+            context = _graph_provider.get_agent_context(
+                agent_name, _graph_current_round[0], observation_text=original
+            )
             if context:
                 return original + "\n\n# KNOWLEDGE GRAPH MEMORY\n" + context
             return original

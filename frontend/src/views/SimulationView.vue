@@ -159,7 +159,11 @@ const handleNewSimulation = async () => {
       const newSimId = res.data.simulation_id
       addLog(`新模拟实例已创建: ${newSimId} (状态: ${res.data.status})`)
       if (res.data.status === 'ready') {
-        router.push({ name: 'SimulationRun', params: { simulationId: newSimId } })
+        router.push({
+          name: 'SimulationRun',
+          params: { simulationId: newSimId },
+          query: { maxRounds: 10 }
+        })
       } else {
         router.push({ name: 'Simulation', params: { simulationId: newSimId } })
       }

@@ -213,7 +213,11 @@ const handleNewSimulation = async () => {
       addLog(`新模拟实例已创建: ${newSimId} (状态: ${res.data.status})`)
       // Navigate to the new simulation — if cloned, it goes straight to start
       if (res.data.status === 'ready') {
-        router.push({ name: 'SimulationRun', params: { simulationId: newSimId } })
+        router.push({
+          name: 'SimulationRun',
+          params: { simulationId: newSimId },
+          query: { maxRounds: maxRounds.value || 10 }
+        })
       } else {
         router.push({ name: 'Simulation', params: { simulationId: newSimId } })
       }

@@ -405,10 +405,9 @@ const doStartSimulation = async () => {
       enable_graph_memory_update: true  // 开启动态图谱更新
     }
     
-    if (props.maxRounds) {
-      params.max_rounds = props.maxRounds
-      addLog(`设置最大模拟轮数: ${props.maxRounds}`)
-    }
+    // Always cap rounds — default to 10 if not specified
+    params.max_rounds = props.maxRounds || 10
+    addLog(`最大模拟轮数: ${params.max_rounds}`)
     
     addLog('已开启动态图谱更新模式')
     

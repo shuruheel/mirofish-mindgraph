@@ -580,11 +580,19 @@ class GraphMemoryUpdater:
 
     def record_round_end(self, round_num: int, platform: str,
                          actions_count: int = 0):
-        """记录轮次结束为Observation节点"""
+        """记录轮次结束为Observation节点（via batch API）"""
         display_name = self._get_platform_display_name(platform)
         content = f"第{round_num}轮{display_name}模拟完成，共{actions_count}个动作"
         try:
-            self.client.capture_observation(content, project_id=self.graph_id)
+            self.client.batch_create(nodes=[{
+                "label": content[:100],
+                "props": {
+                    "_type": "Observation",
+                    "content": content,
+                    "observation_type": "simulation_event",
+                },
+                "agent_id": self.graph_id,
+            }])
         except Exception as e:
             logger.debug(f"记录轮次观察失败: {e}")
 

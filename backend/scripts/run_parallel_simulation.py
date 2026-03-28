@@ -1340,7 +1340,8 @@ async def run_twitter_simulation(
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
         
-        simulated_minutes = round_num * minutes_per_round
+        start_hour = time_config.get("start_hour") or 9
+        simulated_minutes = round_num * minutes_per_round + start_hour * 60
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
         
@@ -1554,7 +1555,8 @@ async def run_reddit_simulation(
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
         
-        simulated_minutes = round_num * minutes_per_round
+        start_hour = time_config.get("start_hour") or 9
+        simulated_minutes = round_num * minutes_per_round + start_hour * 60
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
         

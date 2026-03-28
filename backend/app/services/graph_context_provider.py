@@ -13,12 +13,22 @@ Caching layers:
 - Session cache: Entity nodes + edges + relationship map loaded once (~2-3s)
 - Simulation cache: Journal/Decision nodes refreshed every N rounds (~1s)
 - Round cache: Per-agent-per-round dedup for semantic queries (~0ms)
+
+The semantic retrieval call is synchronous (httpx) but is invoked from an async
+monkey-patch on SocialEnvironment.to_text_prompt(). OASIS calls to_text_prompt
+for each agent sequentially within env.step(), so each agent's retrieval runs in
+the calling coroutine. To enable concurrency, the caller can wrap the call in
+asyncio.to_thread() or use a ThreadPoolExecutor.
 """
 
 import logging
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Set
+
+# Shared thread pool for concurrent semantic retrieval calls
+_retrieval_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="graph-ctx")
 
 logger = logging.getLogger("mirofish.graph_context_provider")
 
@@ -60,6 +70,9 @@ class GraphContextProvider:
         self._client = client
         self._project_id = project_id
         self._sim_dir = sim_dir
+
+        # Dedicated retrieval client with short timeout for per-agent queries
+        self._retrieval_client = None  # Lazily initialized
 
         # Session-level caches (book knowledge — loaded once)
         self._entity_nodes: Dict[str, Dict] = {}       # name → node dict
@@ -315,18 +328,39 @@ class GraphContextProvider:
         """
         import json as _json
 
-        # Find the JSON array in the observation
-        bracket_start = observation_text.find("[")
-        bracket_end = observation_text.rfind("]")
-        if bracket_start < 0 or bracket_end <= bracket_start:
-            # No JSON found — use raw text (trimmed of boilerplate)
-            return observation_text[:1000]
+        # Locate the posts section by its marker text
+        marker = "you see some posts"
+        marker_pos = observation_text.find(marker)
+        if marker_pos < 0:
+            # No posts section — return empty (will skip semantic retrieval)
+            return ""
 
-        json_str = observation_text[bracket_start:bracket_end + 1]
+        # Find the JSON array that follows the marker
+        posts_section = observation_text[marker_pos + len(marker):]
+        bracket_start = posts_section.find("[")
+        if bracket_start < 0:
+            return ""
+
+        # Find the matching closing bracket (handle nested objects)
+        depth = 0
+        bracket_end = -1
+        for i in range(bracket_start, len(posts_section)):
+            if posts_section[i] == "[":
+                depth += 1
+            elif posts_section[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    bracket_end = i
+                    break
+
+        if bracket_end < 0:
+            return ""
+
+        json_str = posts_section[bracket_start:bracket_end + 1]
         try:
             posts = _json.loads(json_str)
         except (_json.JSONDecodeError, ValueError):
-            return observation_text[:1000]
+            return ""
 
         # Extract user_name + content from each post
         lines = []
@@ -336,7 +370,7 @@ class GraphContextProvider:
             if content:
                 lines.append(f"{user}: {content}" if user else content)
 
-        return "\n".join(lines) if lines else observation_text[:1000]
+        return "\n".join(lines)
 
     def _retrieve_semantic_context(self, agent_name: str,
                                    observation_text: str,
@@ -350,15 +384,25 @@ class GraphContextProvider:
         """
         # Extract post content from the structured observation
         post_content = self._extract_post_content(observation_text)
+        if not post_content:
+            # No posts to base the query on — skip semantic retrieval
+            return ""
 
         # Build query: agent identity + post substance (capped for embedding model)
         query = f"{agent_name}: {post_content[:1500]}"
 
         try:
             t0 = time.time()
-            result = self._client.retrieve_context(
+            # Initialize a dedicated retrieval client with short timeout
+            if self._retrieval_client is None:
+                from mindgraph import MindGraph
+                self._retrieval_client = MindGraph(
+                    self._client.base_url,
+                    api_key=self._client.api_key,
+                    timeout=15.0,  # 15s max per agent (vs 60s for batch ops)
+                )
+            result = self._retrieval_client.retrieve_context(
                 query=query,
-                project_id=None,  # Unscoped — search the full knowledge graph
                 k=5,
                 depth=1,
                 include_chunks=True,  # Include source text passages for richer context
@@ -419,6 +463,49 @@ class GraphContextProvider:
                 claim_lines = [f"- {c[:120]}" for c in sorted_claims]
                 return "## Key knowledge about you\n" + "\n".join(claim_lines)
             return ""
+
+    def prefetch_contexts(self, agents: List[tuple], round_num: int,
+                          get_observation_fn=None):
+        """
+        Pre-fetch semantic contexts for multiple agents concurrently.
+
+        Called at the start of each round before OASIS calls to_text_prompt()
+        sequentially. Results are stored in the round cache so individual
+        get_agent_context() calls become cache hits.
+
+        Args:
+            agents: List of (agent_id, agent_name) tuples
+            round_num: Current round number
+            get_observation_fn: Optional callable(agent_id) -> observation_text.
+                If not provided, prefetch is skipped (contexts fetched on-demand).
+        """
+        if not self._warmed or not get_observation_fn:
+            return
+
+        def _fetch_one(agent_id, agent_name):
+            try:
+                obs = get_observation_fn(agent_id)
+                if obs:
+                    self.get_agent_context(agent_name, round_num, observation_text=obs)
+            except Exception as e:
+                logger.debug(f"Prefetch failed for {agent_name}: {e}")
+
+        futures = []
+        for agent_id, agent_name in agents:
+            cache_key = f"{agent_name}:{round_num}"
+            if cache_key not in self._round_cache:
+                futures.append(
+                    _retrieval_executor.submit(_fetch_one, agent_id, agent_name)
+                )
+
+        # Wait for all prefetches (with timeout to avoid blocking)
+        for f in futures:
+            try:
+                f.result(timeout=20)
+            except Exception:
+                pass
+
+        logger.debug(f"Prefetched {len(futures)} agent contexts for round {round_num}")
 
     def get_related_agents(self, agent_name: str) -> Set[str]:
         """

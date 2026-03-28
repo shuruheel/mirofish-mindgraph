@@ -405,6 +405,9 @@ class GraphMemoryUpdater:
         journals_sent = 0
         traces_sent = 0
 
+        # Collect links to create after all journals are written
+        pending_links = []  # [(from_uid, to_uid)]
+
         for activity in activities:
             try:
                 content = self._get_content(activity)
@@ -424,19 +427,11 @@ class GraphMemoryUpdater:
                         session_uid=self._session_uid,
                     )
 
-                    # 链接 Agent → Journal
+                    # Collect Agent → Journal link (created in batch below)
                     journal_uid = result.get("uid", "") if isinstance(result, dict) else ""
                     agent_uid = self._agent_node_uids.get(activity.agent_name)
                     if journal_uid and agent_uid:
-                        try:
-                            self.client.add_link(
-                                from_uid=agent_uid,
-                                to_uid=journal_uid,
-                                edge_type="AUTHORED",
-                                project_id=self.graph_id,
-                            )
-                        except Exception:
-                            pass  # Non-critical
+                        pending_links.append((agent_uid, journal_uid))
 
                     journals_sent += 1
                     self._total_claims += 1
@@ -445,6 +440,10 @@ class GraphMemoryUpdater:
                     self._check_anomaly(activity, content)
                     # 高影响力决策记录
                     self._record_decision(activity, content)
+
+                    # Rate limit: pause briefly between journal writes
+                    import time as _time
+                    _time.sleep(0.2)
                 else:
                     # 社交决策记录（FOLLOW/MUTE）
                     if activity.action_type in self.SOCIAL_DECISION_ACTIONS:
@@ -455,6 +454,20 @@ class GraphMemoryUpdater:
             except Exception as e:
                 logger.warning(f"结构化写入失败，降级为trace: {activity.agent_name} {activity.action_type}: {e}")
                 trace_texts.append(activity.to_episode_text())
+
+        # Create Agent → Journal links (after all journals are written)
+        for from_uid, to_uid in pending_links:
+            try:
+                self.client.add_link(
+                    from_uid=from_uid,
+                    to_uid=to_uid,
+                    edge_type="AUTHORED",
+                    project_id=self.graph_id,
+                )
+                import time as _time
+                _time.sleep(0.1)
+            except Exception:
+                pass  # Non-critical
 
         # 批量写入trace条目
         if trace_texts:

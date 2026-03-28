@@ -8,6 +8,7 @@ MindGraph没有per-graph隔离（一个API Key = 一个组织级图谱），
 - 读取时：通过 get_agent_nodes(agent_id) 过滤
 """
 
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -28,10 +29,12 @@ class MindGraphClient:
     1. 封装 mindgraph-sdk 并添加重试机制
     2. agent_id命名空间隔离
     3. 高层便捷方法（Agent发言摄入、决策记录等）
+    4. 并发控制 — 限制同时进行的API调用数量，避免服务器过载
     """
 
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0  # 秒，指数退避
+    MAX_CONCURRENT_CALLS = 5  # 最多同时进行的API调用
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.api_key = api_key or Config.MINDGRAPH_API_KEY
@@ -39,6 +42,7 @@ class MindGraphClient:
         if not self.api_key:
             raise ValueError("MINDGRAPH_API_KEY 未配置")
         self._mg = MindGraph(self.base_url, api_key=self.api_key, timeout=60.0)
+        self._semaphore = threading.Semaphore(self.MAX_CONCURRENT_CALLS)
         logger.info(f"MindGraphClient 初始化完成: base_url={self.base_url}")
 
     def close(self):
@@ -56,7 +60,15 @@ class MindGraphClient:
     # ═══════════════════════════════════════
 
     def _with_retry(self, func, *args, operation_name: str = "API call", **kwargs) -> Any:
-        """带指数退避重试的调用封装"""
+        """带指数退避重试和并发控制的调用封装"""
+        self._semaphore.acquire()
+        try:
+            return self._with_retry_inner(func, *args, operation_name=operation_name, **kwargs)
+        finally:
+            self._semaphore.release()
+
+    def _with_retry_inner(self, func, *args, operation_name: str = "API call", **kwargs) -> Any:
+        """带指数退避重试的调用封装（内部方法，不加锁）"""
         delay = self.RETRY_DELAY
         last_exception = None
 

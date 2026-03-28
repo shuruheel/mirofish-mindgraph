@@ -496,6 +496,15 @@ class MindGraphClient:
             operation_name=f"获取节点({uid[:12]})",
         )
 
+    def get_nodes_batch(self, uids: List[str]) -> List[Dict[str, Any]]:
+        """批量获取节点详情（单次API调用）"""
+        if not uids:
+            return []
+        return self._with_retry(
+            self._mg.get_nodes_batch, uids,
+            operation_name=f"批量获取节点({len(uids)}个)",
+        )
+
     def get_neighborhood(self, uid: str, depth: int = 1) -> Dict[str, Any]:
         """
         获取节点的邻居（BFS）

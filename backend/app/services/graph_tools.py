@@ -1093,21 +1093,27 @@ class GraphToolsService:
                 if target_uuid:
                     entity_uuids.add(target_uuid)
 
-        # 获取所有相关实体的详情（不限制数量，完整输出）
+        # 批量获取所有相关实体的详情（单次API调用）
         entity_insights = []
         node_map = {}  # 用于后续关系链构建
 
-        for uuid in list(entity_uuids):  # 处理所有实体，不截断
-            if not uuid:
-                continue
+        valid_uuids = [u for u in entity_uuids if u]
+        if valid_uuids:
             try:
-                # 单独获取每个相关节点的信息
-                node = self.get_node_detail(uuid)
-                if node:
-                    node_map[uuid] = node
+                mg_nodes = self.client.get_nodes_batch(valid_uuids)
+                for mg_node in mg_nodes:
+                    node_uuid = mg_node.get("uid", "")
+                    node_type = mg_node.get("node_type", mg_node.get("type", ""))
+                    node = NodeInfo(
+                        uuid=node_uuid,
+                        name=mg_node.get("label", ""),
+                        labels=[node_type] if node_type else [],
+                        summary=mg_node.get("summary", ""),
+                        attributes=mg_node.get("props", {}) if isinstance(mg_node.get("props"), dict) else {}
+                    )
+                    node_map[node_uuid] = node
                     entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
 
-                    # 获取该实体相关的所有事实（不截断）
                     related_facts = [
                         f for f in all_facts
                         if node.name.lower() in f.lower()
@@ -1118,11 +1124,25 @@ class GraphToolsService:
                         "name": node.name,
                         "type": entity_type,
                         "summary": node.summary,
-                        "related_facts": related_facts  # 完整输出，不截断
+                        "related_facts": related_facts
                     })
+                logger.info(f"批量获取 {len(mg_nodes)} 个实体详情完成")
             except Exception as e:
-                logger.debug(f"获取节点 {uuid} 失败: {e}")
-                continue
+                logger.warning(f"批量获取节点失败，回退到逐个获取: {e}")
+                for uuid in valid_uuids:
+                    try:
+                        node = self.get_node_detail(uuid)
+                        if node:
+                            node_map[uuid] = node
+                            entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
+                            related_facts = [f for f in all_facts if node.name.lower() in f.lower()]
+                            entity_insights.append({
+                                "uuid": node.uuid, "name": node.name,
+                                "type": entity_type, "summary": node.summary,
+                                "related_facts": related_facts
+                            })
+                    except Exception:
+                        continue
 
         result.entity_insights = entity_insights
         result.total_entities = len(entity_insights)

@@ -1359,6 +1359,16 @@ async def run_twitter_simulation(
                 action_logger.log_round_end(round_num + 1, 0)
             continue
         
+        # Start round-level graph retrieval in background (completes during env.step)
+        if _graph_provider and active_agents:
+            try:
+                first_env = active_agents[0][1].env
+                obs_text = await first_env.to_text_prompt() if hasattr(first_env, 'to_text_prompt') else ""
+                if obs_text:
+                    _graph_provider.start_round_retrieval(_graph_current_round[0], obs_text)
+            except Exception:
+                pass
+
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
         
@@ -1574,6 +1584,16 @@ async def run_reddit_simulation(
                 action_logger.log_round_end(round_num + 1, 0)
             continue
         
+        # Start round-level graph retrieval in background (completes during env.step)
+        if _graph_provider and active_agents:
+            try:
+                first_env = active_agents[0][1].env
+                obs_text = await first_env.to_text_prompt() if hasattr(first_env, 'to_text_prompt') else ""
+                if obs_text:
+                    _graph_provider.start_round_retrieval(_graph_current_round[0], obs_text)
+            except Exception:
+                pass
+
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
         

@@ -2,33 +2,26 @@
 Graph Context Provider for simulation agents.
 
 Provides graph context to OASIS agents during simulation via two mechanisms:
-1. Semantic retrieval: Per-turn queries against the full knowledge graph based
-   on what the agent is currently observing (posts, discussions). This surfaces
-   topically relevant knowledge — claims, evidence, entity relationships — that
-   helps agents make informed decisions.
-2. Simulation awareness: Cached lookups for related agents' recent activity
-   and simulation-wide decisions.
+1. Semantic retrieval: One query per round against the full knowledge graph,
+   based on the posts all agents see in their feed. The result is shared —
+   all agents in the same round get the same "Relevant knowledge" block,
+   since they observe the same posts. Retrieved once per round via a
+   background thread at round start.
+2. Simulation awareness: Per-agent cached lookups for related agents' recent
+   activity and simulation-wide decisions.
 
 Caching layers:
 - Session cache: Entity nodes + edges + relationship map loaded once (~2-3s)
 - Simulation cache: Journal/Decision nodes refreshed every N rounds (~1s)
-- Round cache: Per-agent-per-round dedup for semantic queries (~0ms)
-
-The semantic retrieval call is synchronous (httpx) but is invoked from an async
-monkey-patch on SocialEnvironment.to_text_prompt(). OASIS calls to_text_prompt
-for each agent sequentially within env.step(), so each agent's retrieval runs in
-the calling coroutine. To enable concurrency, the caller can wrap the call in
-asyncio.to_thread() or use a ThreadPoolExecutor.
+- Round cache: Semantic retrieval result (one per round, shared across agents)
 """
 
+import json as _json
 import logging
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Set
-
-# Shared thread pool for concurrent semantic retrieval calls
-_retrieval_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="graph-ctx")
 
 logger = logging.getLogger("mirofish.graph_context_provider")
 
@@ -43,6 +36,9 @@ MAX_CONTEXT_TOKENS = 1500
 # Max characters (rough proxy for tokens — ~3 chars per token for mixed en/zh)
 MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * 3
 
+# Background thread for round-level retrieval
+_retrieval_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-ctx")
+
 
 class GraphContextProvider:
     """
@@ -52,42 +48,43 @@ class GraphContextProvider:
         provider = GraphContextProvider(client, project_id, sim_dir)
         provider.warm_cache()  # Once at sim start
 
-        # Each round:
-        provider.invalidate_round_cache()
-        context = provider.get_agent_context("Deng Xiaoping", round_num=3)
+        # At round start (before env.step):
+        provider.start_round_retrieval(round_num, observation_text)
+
+        # Per agent (inside to_text_prompt monkey-patch):
+        context = provider.get_agent_context("Deng Xiaoping", round_num)
 
         # Every N rounds:
         provider.refresh_simulation_nodes()
     """
 
     def __init__(self, client, project_id: str, sim_dir: str = ""):
-        """
-        Args:
-            client: MindGraphClient instance
-            project_id: Project ID (used as agent_id for simulation-created nodes)
-            sim_dir: Simulation directory for optional disk caching
-        """
         self._client = client
         self._project_id = project_id
         self._sim_dir = sim_dir
 
-        # Dedicated retrieval client with short timeout for per-agent queries
-        self._retrieval_client = None  # Lazily initialized
+        # Dedicated retrieval client with moderate timeout (initialized lazily)
+        self._retrieval_client = None
 
         # Session-level caches (book knowledge — loaded once)
         self._entity_nodes: Dict[str, Dict] = {}       # name → node dict
         self._entity_uid_map: Dict[str, str] = {}       # name → uid
         self._entity_edges: Dict[str, List[Dict]] = {}  # uid → [edge dicts]
-        self._relationship_map: Dict[str, Set[str]] = defaultdict(set)  # name → related names
-        self._claims_by_entity: Dict[str, List[str]] = defaultdict(list)  # name → [claim texts]
+        self._relationship_map: Dict[str, Set[str]] = defaultdict(set)
+        self._claims_by_entity: Dict[str, List[str]] = defaultdict(list)
 
         # Simulation-level cache (refreshed between rounds)
-        self._simulation_journals: List[Dict] = []   # Journal nodes from simulation
-        self._simulation_decisions: List[Dict] = []  # Decision nodes from simulation
-        self._journals_by_agent: Dict[str, List[Dict]] = defaultdict(list)  # agent_name → journals
+        self._simulation_journals: List[Dict] = []
+        self._simulation_decisions: List[Dict] = []
+        self._journals_by_agent: Dict[str, List[Dict]] = defaultdict(list)
 
-        # Per-round cache
-        self._round_cache: Dict[str, str] = {}  # cache_key → context string
+        # Round-level semantic cache (one result shared across all agents)
+        self._round_semantic_block: str = ""      # Formatted knowledge block
+        self._round_semantic_round: int = -1      # Which round this result is for
+        self._round_retrieval_future: Optional[Future] = None
+
+        # Per-agent round cache (semantic block + per-agent supplements)
+        self._round_cache: Dict[str, str] = {}
 
         self._warmed = False
 
@@ -125,9 +122,8 @@ class GraphContextProvider:
                 claim_nodes.append(node)
 
         # Pass 2: Index claims against the complete entity name set
-        # (must be after pass 1 so all entity names are known)
         entity_names_lower = {name: name.lower() for name in self._entity_nodes
-                              if len(name) >= 4}  # Skip short names to avoid false matches
+                              if len(name) >= 4}
         for node in claim_nodes:
             summary = node.get("summary", "") or node.get("label", "")
             props = node.get("props", {})
@@ -147,26 +143,22 @@ class GraphContextProvider:
                 logger.warning(f"Failed to load entity edges: {e}")
                 edges = []
 
-            # Build lookup and relationship map
             uid_to_name = {v: k for k, v in self._entity_uid_map.items()}
             for edge in edges:
                 from_uid = edge.get("from_uid", "")
                 to_uid = edge.get("to_uid", "")
                 edge_type = edge.get("edge_type", "")
-                # edge_type can be a dict from some API responses — normalize to string
                 if not isinstance(edge_type, str):
                     edge_type = str(edge_type) if edge_type else ""
 
                 self._entity_edges.setdefault(from_uid, []).append(edge)
 
-                # Build relationship map for entities connected by meaningful edge types
                 from_name = uid_to_name.get(from_uid)
                 to_name = uid_to_name.get(to_uid)
                 if from_name and to_name and edge_type in RELATIONSHIP_EDGE_TYPES:
                     self._relationship_map[from_name].add(to_name)
                     self._relationship_map[to_name].add(from_name)
 
-                # Also track "About" edges (Observation/Claim about Entity)
                 if edge_type == "About" and to_name:
                     from_node = self._entity_nodes.get(uid_to_name.get(from_uid, ""), {})
                     if from_node.get("node_type") in ("Observation", "Claim"):
@@ -188,10 +180,7 @@ class GraphContextProvider:
         )
 
     def refresh_simulation_nodes(self):
-        """
-        Refresh simulation-created nodes (Journal, Decision).
-        Called between rounds to pick up new data from prior rounds.
-        """
+        """Refresh simulation-created nodes (Journal, Decision)."""
         try:
             sim_nodes = self._client.list_all_nodes(
                 project_id=self._project_id, max_items=2000
@@ -212,7 +201,6 @@ class GraphContextProvider:
                 journal_type = props.get("journal_type", "")
                 if journal_type == "simulation_post":
                     self._simulation_journals.append(node)
-                    # Extract agent name from content: "Agent Name: content..."
                     content = props.get("content", "")
                     colon_idx = content.find(":")
                     if colon_idx > 0:
@@ -227,31 +215,110 @@ class GraphContextProvider:
         )
 
     def invalidate_round_cache(self):
-        """Clear per-round query cache. Called at start of each round."""
+        """Clear per-round caches. Called at start of each round."""
         self._round_cache.clear()
+
+    # =========================================================================
+    # Round-level semantic retrieval (one call per round, shared across agents)
+    # =========================================================================
+
+    def start_round_retrieval(self, round_num: int, observation_text: str):
+        """
+        Kick off semantic retrieval for this round in a background thread.
+
+        Called once per round before env.step(). The observation_text is the
+        shared feed that all agents see (from any agent's to_text_prompt).
+        The retrieval result is cached and served to all agents in the round.
+
+        Args:
+            round_num: Current round number
+            observation_text: Any agent's observation text (posts are shared)
+        """
+        if not self._warmed:
+            return
+
+        # Already have results for this round
+        if self._round_semantic_round == round_num:
+            return
+
+        post_content = self._extract_post_content(observation_text)
+        if not post_content:
+            self._round_semantic_block = ""
+            self._round_semantic_round = round_num
+            logger.info(f"Round {round_num}: no posts found, skipping retrieval")
+            return
+
+        # Submit retrieval to background thread
+        self._round_retrieval_future = _retrieval_executor.submit(
+            self._do_round_retrieval, round_num, post_content
+        )
+        logger.info(f"Round {round_num}: semantic retrieval started in background")
+
+    def _do_round_retrieval(self, round_num: int, post_content: str):
+        """Execute the semantic retrieval (runs in background thread)."""
+        query = post_content[:500]  # Concise query for the embedding model
+
+        try:
+            if self._retrieval_client is None:
+                from mindgraph import MindGraph
+                self._retrieval_client = MindGraph(
+                    self._client.base_url,
+                    api_key=self._client.api_key,
+                    timeout=30.0,
+                )
+
+            t0 = time.time()
+            result = self._retrieval_client.retrieve_context(
+                query=query,
+                k=3,
+                depth=1,
+                include_chunks=True,
+            )
+            elapsed = time.time() - t0
+
+            block = self._format_retrieval_result(result, MAX_CONTEXT_CHARS)
+            self._round_semantic_block = block
+            self._round_semantic_round = round_num
+            logger.info(
+                f"Round {round_num}: semantic retrieval completed in {elapsed:.1f}s "
+                f"({len(block)} chars)"
+            )
+
+        except Exception as e:
+            self._round_semantic_block = ""
+            self._round_semantic_round = round_num
+            logger.warning(f"Round {round_num}: semantic retrieval failed: {e}")
+
+    def _wait_for_round_retrieval(self):
+        """Block until the current round's retrieval is done (if any)."""
+        if self._round_retrieval_future is not None:
+            try:
+                self._round_retrieval_future.result(timeout=35)
+            except Exception:
+                pass
+            self._round_retrieval_future = None
+
+    # =========================================================================
+    # Per-agent context assembly
+    # =========================================================================
 
     def get_agent_context(self, agent_name: str, round_num: int,
                           observation_text: str = "") -> str:
         """
-        Get graph context for one agent based on their current observation.
+        Get graph context for one agent.
 
-        Uses semantic retrieval against the full knowledge graph to find
-        topically relevant knowledge for what the agent is currently seeing,
-        then supplements with simulation activity awareness.
-
-        Context includes:
-        1. Semantically relevant knowledge from the graph (topic-aware)
-        2. Related agents' recent simulation activity
-        3. Recent simulation-wide decisions
+        The semantic retrieval block is shared across all agents in the round
+        (one API call, cached). Per-agent supplements (related agents' activity,
+        recent decisions) are added on top.
 
         Args:
             agent_name: The agent's entity name
             round_num: Current simulation round
-            observation_text: The agent's current observation (posts they see).
-                Used as the basis for semantic retrieval queries.
+            observation_text: Ignored (kept for API compatibility). Retrieval
+                is triggered by start_round_retrieval() at round start.
 
         Returns:
-            Context string (~500 tokens max), or empty string if no context
+            Context string, or empty string if no context
         """
         if not self._warmed:
             return ""
@@ -260,19 +327,24 @@ class GraphContextProvider:
         if cache_key in self._round_cache:
             return self._round_cache[cache_key]
 
+        # If retrieval was started for this round, wait for it
+        if self._round_semantic_round != round_num:
+            # Retrieval wasn't started yet — trigger it now from observation_text
+            if observation_text:
+                self.start_round_retrieval(round_num, observation_text)
+            self._wait_for_round_retrieval()
+        elif self._round_retrieval_future is not None:
+            self._wait_for_round_retrieval()
+
         parts = []
         char_budget = MAX_CONTEXT_CHARS
 
-        # 1. Semantic retrieval from the full knowledge graph
-        if observation_text:
-            semantic_block = self._retrieve_semantic_context(
-                agent_name, observation_text, char_budget
-            )
-            if semantic_block:
-                parts.append(semantic_block)
-                char_budget -= len(semantic_block)
+        # 1. Shared semantic retrieval block (same for all agents this round)
+        if self._round_semantic_block:
+            parts.append(self._round_semantic_block)
+            char_budget -= len(self._round_semantic_block)
 
-        # 2. Related agents' recent activity (from simulation data)
+        # 2. Related agents' recent activity (per-agent, from simulation data)
         related = self._relationship_map.get(agent_name, set())
         if related and char_budget > 200:
             activity_lines = []
@@ -312,36 +384,29 @@ class GraphContextProvider:
         self._round_cache[cache_key] = context
         return context
 
+    # =========================================================================
+    # Helpers
+    # =========================================================================
+
     @staticmethod
     def _extract_post_content(observation_text: str) -> str:
         """
-        Extract meaningful text content from the OASIS observation prompt.
+        Extract user_name + content pairs from the OASIS observation prompt.
 
-        The observation is structured as:
-            <groups env>
-            After refreshing, you see some posts <JSON array of post objects>
-            pick one you want to perform action...
-
-        The JSON posts use indent=4 formatting, so raw truncation wastes most
-        of the budget on JSON syntax. This method extracts just the post
-        content fields and user names for a focused semantic query.
+        The observation contains: groups env → posts JSON → action prompt.
+        We anchor on "you see some posts" to find the posts array.
         """
-        import json as _json
-
-        # Locate the posts section by its marker text
         marker = "you see some posts"
         marker_pos = observation_text.find(marker)
         if marker_pos < 0:
-            # No posts section — return empty (will skip semantic retrieval)
             return ""
 
-        # Find the JSON array that follows the marker
         posts_section = observation_text[marker_pos + len(marker):]
         bracket_start = posts_section.find("[")
         if bracket_start < 0:
             return ""
 
-        # Find the matching closing bracket (handle nested objects)
+        # Find the matching closing bracket
         depth = 0
         bracket_end = -1
         for i in range(bracket_start, len(posts_section)):
@@ -362,7 +427,6 @@ class GraphContextProvider:
         except (_json.JSONDecodeError, ValueError):
             return ""
 
-        # Extract user_name + content from each post
         lines = []
         for post in posts:
             user = post.get("user_name", "")
@@ -372,146 +436,51 @@ class GraphContextProvider:
 
         return "\n".join(lines)
 
-    def _retrieve_semantic_context(self, agent_name: str,
-                                   observation_text: str,
-                                   char_budget: int) -> str:
-        """
-        Query the full knowledge graph for content relevant to the agent's
-        current observation. Returns a formatted text block.
+    @staticmethod
+    def _format_retrieval_result(result: Dict[str, Any], char_budget: int) -> str:
+        """Format retrieve_context response into a text block."""
+        graph_data = result.get("graph", {})
+        nodes = graph_data.get("nodes", [])
+        edges = graph_data.get("edges", [])
+        chunks = result.get("chunks", [])
 
-        The query combines the agent's identity with the substance of the
-        posts they're seeing, so retrieval is both agent-aware and topic-aware.
-        """
-        # Extract post content from the structured observation
-        post_content = self._extract_post_content(observation_text)
-        if not post_content:
-            # No posts to base the query on — skip semantic retrieval
+        knowledge_lines = []
+        seen = set()
+
+        for edge in edges:
+            label = edge.get("label", "")
+            if label and label not in seen:
+                knowledge_lines.append(f"- {label[:200]}")
+                seen.add(label)
+
+        for node in nodes:
+            summary = node.get("summary", "") or node.get("label", "")
+            node_type = node.get("node_type", "")
+            if summary and summary not in seen:
+                prefix = f"[{node_type}] " if node_type else ""
+                knowledge_lines.append(f"- {prefix}{summary[:200]}")
+                seen.add(summary)
+
+        for chunk in chunks:
+            content = chunk.get("content", "") or chunk.get("text", "")
+            if content and content[:80] not in seen:
+                knowledge_lines.append(f"- [Source] {content[:250]}")
+                seen.add(content[:80])
+
+        if not knowledge_lines:
             return ""
 
-        # Build query: agent identity + post substance (capped for embedding model)
-        query = f"{agent_name}: {post_content[:1500]}"
+        block = "## Relevant knowledge\n"
+        for line in knowledge_lines:
+            candidate = block + line + "\n"
+            if len(candidate) > char_budget:
+                break
+            block = candidate
 
-        try:
-            t0 = time.time()
-            # Initialize a dedicated retrieval client with short timeout
-            if self._retrieval_client is None:
-                from mindgraph import MindGraph
-                self._retrieval_client = MindGraph(
-                    self._client.base_url,
-                    api_key=self._client.api_key,
-                    timeout=15.0,  # 15s max per agent (vs 60s for batch ops)
-                )
-            result = self._retrieval_client.retrieve_context(
-                query=query,
-                k=5,
-                depth=1,
-                include_chunks=True,  # Include source text passages for richer context
-            )
-            elapsed = time.time() - t0
-            logger.debug(f"Semantic retrieval for {agent_name}: {elapsed:.2f}s")
-
-            graph_data = result.get("graph", {})
-            nodes = graph_data.get("nodes", [])
-            edges = graph_data.get("edges", [])
-            chunks = result.get("chunks", [])
-
-            knowledge_lines = []
-            seen = set()
-
-            # Edges capture relationships as natural language facts
-            for edge in edges:
-                label = edge.get("label", "")
-                if label and label not in seen:
-                    knowledge_lines.append(f"- {label[:200]}")
-                    seen.add(label)
-
-            # Nodes provide entity context and claim summaries
-            for node in nodes:
-                summary = node.get("summary", "") or node.get("label", "")
-                node_type = node.get("node_type", "")
-                if summary and summary not in seen:
-                    prefix = f"[{node_type}] " if node_type else ""
-                    knowledge_lines.append(f"- {prefix}{summary[:200]}")
-                    seen.add(summary)
-
-            # Chunks provide original source text passages
-            for chunk in chunks:
-                content = chunk.get("content", "") or chunk.get("text", "")
-                if content and content[:80] not in seen:
-                    knowledge_lines.append(f"- [Source] {content[:250]}")
-                    seen.add(content[:80])
-
-            if not knowledge_lines:
-                return ""
-
-            # Cap to fit within budget
-            block = "## Relevant knowledge\n"
-            for line in knowledge_lines:
-                candidate = block + line + "\n"
-                if len(candidate) > char_budget:
-                    break
-                block = candidate
-
-            return block.rstrip()
-
-        except Exception as e:
-            logger.debug(f"Semantic retrieval failed for {agent_name}: {e}")
-            # Fallback: use cached claims about this agent (static, but better than nothing)
-            claims = self._claims_by_entity.get(agent_name, [])
-            if claims:
-                sorted_claims = sorted(claims, key=len)[:3]
-                claim_lines = [f"- {c[:120]}" for c in sorted_claims]
-                return "## Key knowledge about you\n" + "\n".join(claim_lines)
-            return ""
-
-    def prefetch_contexts(self, agents: List[tuple], round_num: int,
-                          get_observation_fn=None):
-        """
-        Pre-fetch semantic contexts for multiple agents concurrently.
-
-        Called at the start of each round before OASIS calls to_text_prompt()
-        sequentially. Results are stored in the round cache so individual
-        get_agent_context() calls become cache hits.
-
-        Args:
-            agents: List of (agent_id, agent_name) tuples
-            round_num: Current round number
-            get_observation_fn: Optional callable(agent_id) -> observation_text.
-                If not provided, prefetch is skipped (contexts fetched on-demand).
-        """
-        if not self._warmed or not get_observation_fn:
-            return
-
-        def _fetch_one(agent_id, agent_name):
-            try:
-                obs = get_observation_fn(agent_id)
-                if obs:
-                    self.get_agent_context(agent_name, round_num, observation_text=obs)
-            except Exception as e:
-                logger.debug(f"Prefetch failed for {agent_name}: {e}")
-
-        futures = []
-        for agent_id, agent_name in agents:
-            cache_key = f"{agent_name}:{round_num}"
-            if cache_key not in self._round_cache:
-                futures.append(
-                    _retrieval_executor.submit(_fetch_one, agent_id, agent_name)
-                )
-
-        # Wait for all prefetches (with timeout to avoid blocking)
-        for f in futures:
-            try:
-                f.result(timeout=20)
-            except Exception:
-                pass
-
-        logger.debug(f"Prefetched {len(futures)} agent contexts for round {round_num}")
+        return block.rstrip()
 
     def get_related_agents(self, agent_name: str) -> Set[str]:
-        """
-        Get names of agents connected to this one via graph relationships.
-        Uses the cached relationship map (session-level, O(1) lookup).
-        """
+        """Get names of agents connected via graph relationships."""
         return self._relationship_map.get(agent_name, set())
 
     def get_relationship_map(self) -> Dict[str, Set[str]]:

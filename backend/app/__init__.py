@@ -47,6 +47,13 @@ def create_app(config_class=Config):
     SimulationRunner.register_cleanup()
     if should_log_startup:
         logger.info("已注册模拟进程清理函数")
+
+    # Recover monitoring threads for simulations that survived Flask restart
+    if should_log_startup:
+        try:
+            SimulationRunner.recover_monitors()
+        except Exception as e:
+            logger.warning(f"恢复监控线程失败: {e}")
     
     # 请求日志中间件
     @app.before_request

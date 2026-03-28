@@ -168,10 +168,19 @@ try:
         generate_twitter_agent_graph,
         generate_reddit_agent_graph
     )
+    from oasis.social_agent.agent_environment import SocialEnvironment
 except ImportError as e:
     print(f"错误: 缺少依赖 {e}")
     print("请先安装: pip install oasis-ai camel-ai")
     sys.exit(1)
+
+# Import graph context provider (optional — degrades gracefully if unavailable)
+try:
+    from app.utils.mindgraph_client import MindGraphClient
+    from app.services.graph_context_provider import GraphContextProvider
+    _GRAPH_CONTEXT_AVAILABLE = True
+except ImportError:
+    _GRAPH_CONTEXT_AVAILABLE = False
 
 
 # Twitter可用动作（不包含INTERVIEW，INTERVIEW只能通过ManualAction手动触发）
@@ -1037,48 +1046,136 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     )
 
 
+# ============================================================
+# Graph Context: monkey-patch and provider globals
+# ============================================================
+
+# Global graph provider instance (set by init_graph_context)
+_graph_provider: Optional['GraphContextProvider'] = None
+# Global agent name map (agent_id → name, set per platform)
+_graph_agent_names: Dict[int, str] = {}
+# Current round tracker (mutable list for closure access)
+_graph_current_round: List[int] = [0]
+
+# Save original to_text_prompt before any patching
+_original_to_text_prompt = SocialEnvironment.to_text_prompt
+
+
+def init_graph_context(config: Dict[str, Any], simulation_dir: str,
+                       agent_names: Dict[int, str]) -> Optional['GraphContextProvider']:
+    """
+    Initialize graph context provider and monkey-patch OASIS observations.
+    Called once per simulation. Returns the provider or None if unavailable.
+    """
+    global _graph_provider, _graph_agent_names
+
+    if not _GRAPH_CONTEXT_AVAILABLE:
+        print("[GraphContext] mindgraph-sdk not available, skipping")
+        return None
+
+    api_key = os.environ.get("MINDGRAPH_API_KEY", "")
+    if not api_key:
+        print("[GraphContext] MINDGRAPH_API_KEY not set, skipping")
+        return None
+
+    project_id = config.get("project_id", "")
+    if not project_id:
+        print("[GraphContext] No project_id in config, skipping")
+        return None
+
+    try:
+        client = MindGraphClient()
+        provider = GraphContextProvider(client, project_id, simulation_dir)
+        provider.warm_cache()
+        _graph_provider = provider
+        _graph_agent_names.update(agent_names)
+
+        # Apply monkey-patch
+        async def _graph_enhanced_to_text_prompt(self, **kwargs):
+            original = await _original_to_text_prompt(self, **kwargs)
+            if not _graph_provider:
+                return original
+            agent_id = getattr(self.action, 'agent_id', None) if hasattr(self, 'action') else None
+            if agent_id is None:
+                return original
+            agent_name = _graph_agent_names.get(agent_id, f"Agent_{agent_id}")
+            context = _graph_provider.get_agent_context(agent_name, _graph_current_round[0])
+            if context:
+                return original + "\n\n# KNOWLEDGE GRAPH MEMORY\n" + context
+            return original
+
+        SocialEnvironment.to_text_prompt = _graph_enhanced_to_text_prompt
+        rel_count = sum(len(v) for v in provider.get_relationship_map().values())
+        print(f"[GraphContext] Initialized: {rel_count} relationship edges, monkey-patch active")
+        return provider
+    except Exception as e:
+        print(f"[GraphContext] Failed to initialize: {e}")
+        return None
+
+
 def get_active_agents_for_round(
     env,
     config: Dict[str, Any],
     current_hour: int,
     round_num: int
 ) -> List:
-    """根据时间和配置决定本轮激活哪些Agent"""
+    """根据时间和配置决定本轮激活哪些Agent（支持图谱关系增强）"""
     time_config = config.get("time_config", {})
     agent_configs = config.get("agent_configs", [])
-    
+
     base_min = time_config.get("agents_per_hour_min", 5)
     base_max = time_config.get("agents_per_hour_max", 20)
-    
+
     peak_hours = time_config.get("peak_hours", [9, 10, 11, 14, 15, 20, 21, 22])
     off_peak_hours = time_config.get("off_peak_hours", [0, 1, 2, 3, 4, 5])
-    
+
     if current_hour in peak_hours:
         multiplier = time_config.get("peak_activity_multiplier", 1.5)
     elif current_hour in off_peak_hours:
         multiplier = time_config.get("off_peak_activity_multiplier", 0.3)
     else:
         multiplier = 1.0
-    
+
     target_count = int(random.uniform(base_min, base_max) * multiplier)
-    
+
     candidates = []
     for cfg in agent_configs:
         agent_id = cfg.get("agent_id", 0)
         active_hours = cfg.get("active_hours", list(range(8, 23)))
         activity_level = cfg.get("activity_level", 0.5)
-        
+
         if current_hour not in active_hours:
             continue
-        
+
         if random.random() < activity_level:
             candidates.append(agent_id)
-    
+
     selected_ids = random.sample(
-        candidates, 
+        candidates,
         min(target_count, len(candidates))
     ) if candidates else []
-    
+
+    # Graph-aware boost: co-activate related agents
+    if _graph_provider and selected_ids:
+        candidates_set = set(candidates)
+        boosted = set(selected_ids)
+        boost_prob = time_config.get("relationship_boost_probability", 0.6)
+        # Build reverse map: name → agent_id
+        name_to_id = {}
+        for cfg in agent_configs:
+            name_to_id[cfg.get("entity_name", "")] = cfg.get("agent_id", 0)
+
+        for agent_id in list(selected_ids):
+            agent_name = _graph_agent_names.get(agent_id)
+            if not agent_name:
+                continue
+            for related_name in _graph_provider.get_related_agents(agent_name):
+                related_id = name_to_id.get(related_name)
+                if related_id is not None and related_id in candidates_set and related_id not in boosted:
+                    if random.random() < boost_prob:
+                        boosted.add(related_id)
+        selected_ids = list(boosted)[:target_count]  # Respect cap
+
     active_agents = []
     for agent_id in selected_ids:
         try:
@@ -1086,7 +1183,7 @@ def get_active_agents_for_round(
             active_agents.append((agent_id, agent))
         except Exception:
             pass
-    
+
     return active_agents
 
 
@@ -1158,20 +1255,29 @@ async def run_twitter_simulation(
         database_path=db_path,
         semaphore=30,  # 限制最大并发 LLM 请求数，防止 API 过载
     )
-    
+
     await result.env.reset()
     log_info("环境已启动")
-    
+
+    # Initialize graph context provider (first platform to call this wins)
+    if _graph_provider is None:
+        provider = init_graph_context(config, simulation_dir, agent_names)
+        if provider:
+            log_info(f"图谱上下文已启用: {len(provider.get_relationship_map())} 关系")
+    elif _graph_provider:
+        # Second platform: merge its agent names into the shared map
+        _graph_agent_names.update(agent_names)
+
     if action_logger:
         action_logger.log_simulation_start(config)
-    
+
     total_actions = 0
     last_rowid = 0  # 跟踪数据库中最后处理的行号（使用 rowid 避免 created_at 格式差异）
-    
+
     # 执行初始事件
     event_config = config.get("event_config", {})
     initial_posts = event_config.get("initial_posts", [])
-    
+
     # 记录 round 0 开始（初始事件阶段）
     if action_logger:
         action_logger.log_round_start(0, 0)  # round 0, simulated_hour 0
@@ -1274,12 +1380,19 @@ async def run_twitter_simulation(
         if action_logger:
             action_logger.log_round_end(round_num + 1, round_action_count)
         
+        # Update graph context for next round
+        if _graph_provider:
+            _graph_current_round[0] = round_num + 1
+            _graph_provider.invalidate_round_cache()
+            if (round_num + 1) % 3 == 0:  # Refresh simulation nodes every 3 rounds
+                _graph_provider.refresh_simulation_nodes()
+
         if (round_num + 1) % 20 == 0:
             progress = (round_num + 1) / total_rounds * 100
             log_info(f"Day {simulated_day}, {simulated_hour:02d}:00 - Round {round_num + 1}/{total_rounds} ({progress:.1f}%)")
-    
+
     # 注意：不关闭环境，保留给Interview使用
-    
+
     if action_logger:
         action_logger.log_simulation_end(total_rounds, total_actions)
     
@@ -1349,20 +1462,28 @@ async def run_reddit_simulation(
         database_path=db_path,
         semaphore=30,  # 限制最大并发 LLM 请求数，防止 API 过载
     )
-    
+
     await result.env.reset()
     log_info("环境已启动")
-    
+
+    # Initialize graph context provider (if not already done by Twitter)
+    if _graph_provider is None:
+        provider = init_graph_context(config, simulation_dir, agent_names)
+        if provider:
+            log_info(f"图谱上下文已启用: {len(provider.get_relationship_map())} 关系")
+    elif _graph_provider:
+        _graph_agent_names.update(agent_names)
+
     if action_logger:
         action_logger.log_simulation_start(config)
-    
+
     total_actions = 0
     last_rowid = 0  # 跟踪数据库中最后处理的行号（使用 rowid 避免 created_at 格式差异）
-    
+
     # 执行初始事件
     event_config = config.get("event_config", {})
     initial_posts = event_config.get("initial_posts", [])
-    
+
     # 记录 round 0 开始（初始事件阶段）
     if action_logger:
         action_logger.log_round_start(0, 0)  # round 0, simulated_hour 0
@@ -1473,12 +1594,19 @@ async def run_reddit_simulation(
         if action_logger:
             action_logger.log_round_end(round_num + 1, round_action_count)
         
+        # Update graph context for next round
+        if _graph_provider:
+            _graph_current_round[0] = round_num + 1
+            _graph_provider.invalidate_round_cache()
+            if (round_num + 1) % 3 == 0:  # Refresh simulation nodes every 3 rounds
+                _graph_provider.refresh_simulation_nodes()
+
         if (round_num + 1) % 20 == 0:
             progress = (round_num + 1) / total_rounds * 100
             log_info(f"Day {simulated_day}, {simulated_hour:02d}:00 - Round {round_num + 1}/{total_rounds} ({progress:.1f}%)")
-    
+
     # 注意：不关闭环境，保留给Interview使用
-    
+
     if action_logger:
         action_logger.log_simulation_end(total_rounds, total_actions)
     

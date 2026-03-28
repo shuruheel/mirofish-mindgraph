@@ -739,13 +739,18 @@ SECTION_SYSTEM_PROMPT_TEMPLATE = """\
 
 {tools_description}
 
-【工具使用建议 - 请混合使用不同工具，不要只用一种】
+【数据优先级 — 非常重要】
+报告必须基于模拟中实际发生的事件，而非原始文档知识：
+1. 首先使用 simulation_search 检索模拟Agent的实际行为（发帖、决策、互动）
+2. 然后使用 insight_forge 获取深度上下文（会同时检索文档知识作为背景）
+3. 绝不能将原始文档中的知识当作模拟发现来呈现
+
+【工具使用建议 - 请混合使用不同工具】
+- simulation_search: 【优先使用】搜索模拟过程中Agent的实际行为和言论
 - insight_forge: 深度洞察分析，自动分解问题并多维度检索事实和关系
 - panorama_search: 广角全景搜索，了解事件全貌、时间线和演变过程
 - quick_search: 快速验证某个具体信息点
 - interview_agents: 采访模拟Agent，获取不同角色的第一人称观点和真实反应
-- cognitive_analysis: 认知结构分析（弱声明/矛盾/开放问题），发现深层分歧和不确定性
-- graph_explore: 推理链追踪和信念演变历史，了解观点形成过程
 
 ═══════════════════════════════════════════════════════════════
 【工作流程】
@@ -954,6 +959,16 @@ class ReportAgent:
     def _define_tools(self) -> Dict[str, Dict[str, Any]]:
         """定义可用工具"""
         return {
+            "simulation_search": {
+                "name": "simulation_search",
+                "description": "搜索模拟过程中产生的数据（Agent发帖、决策、异常等）。"
+                    "这是最重要的工具 — 报告应主要基于模拟数据而非原始文档知识。"
+                    "返回模拟中Agent的实际行为和言论。",
+                "parameters": {
+                    "query": "搜索查询（关于模拟中发生了什么）",
+                    "limit": "返回结果数量（可选，默认15）"
+                }
+            },
             "insight_forge": {
                 "name": "insight_forge",
                 "description": TOOL_DESC_INSIGHT_FORGE,
@@ -1020,7 +1035,20 @@ class ReportAgent:
         logger.info(f"执行工具: {tool_name}, 参数: {parameters}")
         
         try:
-            if tool_name == "insight_forge":
+            if tool_name == "simulation_search":
+                # Simulation-scoped search — only simulation-created data
+                query = parameters.get("query", "")
+                limit = parameters.get("limit", 15)
+                if isinstance(limit, str):
+                    limit = int(limit)
+                result = self.graph_tools.search_simulation_data(
+                    graph_id=self.graph_id,
+                    query=query,
+                    limit=limit
+                )
+                return result.to_text() if hasattr(result, 'to_text') else str(result)
+
+            elif tool_name == "insight_forge":
                 query = parameters.get("query", "")
                 ctx = parameters.get("report_context", "") or report_context
                 result = self.graph_tools.insight_forge(
@@ -1030,7 +1058,7 @@ class ReportAgent:
                     report_context=ctx
                 )
                 return result.to_text()
-            
+
             elif tool_name == "panorama_search":
                 # 广度搜索 - 获取全貌
                 query = parameters.get("query", "")
@@ -1043,7 +1071,7 @@ class ReportAgent:
                     include_expired=include_expired
                 )
                 return result.to_text()
-            
+
             elif tool_name == "quick_search":
                 # 简单搜索 - 快速检索
                 query = parameters.get("query", "")
@@ -1142,7 +1170,7 @@ class ReportAgent:
             return f"工具执行失败: {str(e)}"
     
     # 合法的工具名称集合，用于裸 JSON 兜底解析时校验
-    VALID_TOOL_NAMES = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+    VALID_TOOL_NAMES = {"simulation_search", "insight_forge", "panorama_search", "quick_search", "interview_agents"}
 
     def _parse_tool_calls(self, response: str) -> List[Dict[str, Any]]:
         """
@@ -1367,7 +1395,7 @@ class ReportAgent:
         min_tool_calls = 3  # 最少工具调用次数
         conflict_retries = 0  # 工具调用与Final Answer同时出现的连续冲突次数
         used_tools = set()  # 记录已调用过的工具名
-        all_tools = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+        all_tools = {"simulation_search", "insight_forge", "panorama_search", "quick_search", "interview_agents"}
 
         # 报告上下文，用于InsightForge的子问题生成
         report_context = f"章节标题: {section.title}\n模拟需求: {self.simulation_requirement}"

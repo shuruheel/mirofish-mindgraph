@@ -505,6 +505,15 @@ class MindGraphClient:
             operation_name=f"批量获取节点({len(uids)}个)",
         )
 
+    def get_edges_batch(self, node_uids: List[str]) -> List[Dict[str, Any]]:
+        """批量获取节点间的边（单次API调用）"""
+        if not node_uids:
+            return []
+        return self._with_retry(
+            self._mg.get_edges_batch, node_uids,
+            operation_name=f"批量查询边({len(node_uids)}个节点)",
+        )
+
     def get_neighborhood(self, uid: str, depth: int = 1) -> Dict[str, Any]:
         """
         获取节点的邻居（BFS）

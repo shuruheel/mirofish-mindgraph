@@ -414,6 +414,11 @@ class GraphToolsService:
     - get_entity_summary - 获取实体的关系摘要
     """
 
+    # Class-level cache for full-graph fetches (shared across instances)
+    _node_cache: Dict[str, tuple] = {}  # (graph_id, scope) → (nodes, timestamp)
+    _edge_cache: Dict[str, tuple] = {}  # (graph_id, scope) → (edges, timestamp)
+    _CACHE_TTL = 300  # 5 minutes
+
     def __init__(self, llm_client: Optional[LLMClient] = None, source: str = "upload"):
         self.client = MindGraphClient()
         self.source = source
@@ -536,6 +541,80 @@ class GraphToolsService:
             # 降级：使用本地关键词匹配搜索
             return self._local_search(graph_id, query, limit, scope)
 
+    def search_simulation_data(
+        self,
+        graph_id: str,
+        query: str,
+        limit: int = 15
+    ) -> SearchResult:
+        """
+        Search only simulation-created nodes (Journal, Decision, Observation, etc.)
+
+        Uses agent_id-scoped search which returns only nodes created by
+        the simulation (not the original book/document knowledge).
+
+        Args:
+            graph_id: Graph ID (= project_id = agent_id namespace)
+            query: Search query
+            limit: Max results
+
+        Returns:
+            SearchResult with only simulation data
+        """
+        logger.info(f"模拟数据搜索: graph_id={graph_id}, query={query[:50]}...")
+
+        try:
+            # search_hybrid with project_id filters by agent_id → simulation-only
+            search_response = self.client.search_hybrid(
+                query=query,
+                project_id=graph_id,
+                limit=limit
+            )
+
+            facts = []
+            edges = []
+            nodes = []
+
+            for item in search_response.get("results", []):
+                label = item.get("label", "")
+                summary = item.get("summary", "")
+                content = item.get("content", "")
+                node_type = item.get("node_type", "")
+                uid = item.get("uid", "")
+
+                fact_text = content or summary or label
+                if fact_text:
+                    # Tag simulation data for clarity
+                    type_tag = f"[{node_type}] " if node_type else ""
+                    facts.append(f"{type_tag}{fact_text}")
+
+                from_uid = item.get("from_uid", "")
+                to_uid = item.get("to_uid", "")
+                if from_uid and to_uid:
+                    edges.append({
+                        "uuid": uid,
+                        "name": item.get("edge_type", label),
+                        "fact": fact_text,
+                        "source_node_uuid": from_uid,
+                        "target_node_uuid": to_uid,
+                    })
+                else:
+                    nodes.append({
+                        "uuid": uid,
+                        "name": label,
+                        "labels": [node_type] if node_type else [],
+                        "summary": summary or content,
+                    })
+
+            logger.info(f"模拟数据搜索完成: {len(facts)} 条事实")
+            return SearchResult(
+                facts=facts, edges=edges, nodes=nodes,
+                query=query, total_count=len(facts)
+            )
+        except Exception as e:
+            logger.warning(f"模拟数据搜索失败: {e}")
+            return SearchResult(facts=[], edges=[], nodes=[], query=query, total_count=0)
+
     def _local_search(
         self,
         graph_id: str,
@@ -640,19 +719,32 @@ class GraphToolsService:
             total_count=len(facts)
         )
 
-    def get_all_nodes(self, graph_id: str) -> List[NodeInfo]:
+    def get_all_nodes(self, graph_id: str, scope: str = "full") -> List[NodeInfo]:
         """
-        获取图谱的所有节点（自动分页获取）
+        获取图谱的所有节点（带缓存）
 
         Args:
             graph_id: 图谱ID（项目ID）
+            scope: "full" = 全量图谱, "simulation" = 仅模拟创建的节点
 
         Returns:
             节点列表
         """
-        logger.info(f"获取图谱 {graph_id} 的所有节点 (source={self.source})...")
+        import time as _time
+        cache_key = f"{graph_id}:{scope}:{self.source}"
+        cached = self._node_cache.get(cache_key)
+        if cached:
+            nodes, ts = cached
+            if _time.time() - ts < self._CACHE_TTL:
+                logger.info(f"节点缓存命中: {len(nodes)} 个 (key={cache_key})")
+                return nodes
 
-        if self.source == "mindgraph":
+        logger.info(f"获取图谱 {graph_id} 的所有节点 (source={self.source}, scope={scope})...")
+
+        if scope == "simulation":
+            # Only simulation-created nodes (agent_id-scoped)
+            mg_nodes = self.client.list_all_nodes(project_id=graph_id)
+        elif self.source == "mindgraph":
             mg_nodes = self.client.list_all_graph_nodes()
         else:
             mg_nodes = self.client.list_all_nodes(project_id=graph_id)
@@ -673,7 +765,8 @@ class GraphToolsService:
                 attributes=node_props if isinstance(node_props, dict) else {}
             ))
 
-        logger.info(f"获取到 {len(result)} 个节点")
+        self._node_cache[cache_key] = (result, _time.time())
+        logger.info(f"获取到 {len(result)} 个节点 (已缓存)")
         return result
 
     def get_all_edges(self, graph_id: str, include_temporal: bool = True,

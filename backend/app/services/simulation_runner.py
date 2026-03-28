@@ -225,7 +225,56 @@ class SimulationRunner:
     
     # 图谱记忆更新配置
     _graph_memory_enabled: Dict[str, bool] = {}  # simulation_id -> enabled
-    
+
+    @classmethod
+    def recover_monitors(cls):
+        """
+        Recover monitoring threads for running simulations after Flask restart.
+        Called once from app factory on startup.
+        """
+        if not os.path.exists(cls.RUN_STATE_DIR):
+            return
+
+        recovered = 0
+        for sim_id in os.listdir(cls.RUN_STATE_DIR):
+            sim_dir = os.path.join(cls.RUN_STATE_DIR, sim_id)
+            if not os.path.isdir(sim_dir):
+                continue
+
+            state = cls._load_run_state(sim_id)
+            if not state or state.runner_status != RunnerStatus.RUNNING:
+                continue
+
+            pid = state.process_pid
+            if not pid:
+                continue
+
+            # Check if the process is still alive
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                # Process is dead — mark as failed
+                state.runner_status = RunnerStatus.FAILED
+                state.error = f"Process PID={pid} died (server restarted)"
+                cls._save_run_state(state)
+                logger.info(f"标记已死亡模拟: {sim_id} (PID={pid})")
+                continue
+
+            # Process is alive — restart monitoring thread
+            if sim_id not in cls._monitor_threads:
+                monitor_thread = threading.Thread(
+                    target=cls._monitor_simulation,
+                    args=(sim_id,),
+                    daemon=True
+                )
+                monitor_thread.start()
+                cls._monitor_threads[sim_id] = monitor_thread
+                recovered += 1
+                logger.info(f"恢复监控线程: {sim_id} (PID={pid})")
+
+        if recovered:
+            logger.info(f"共恢复 {recovered} 个模拟监控线程")
+
     @classmethod
     def get_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
         """获取运行状态"""

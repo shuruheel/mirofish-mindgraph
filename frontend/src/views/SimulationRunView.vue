@@ -60,6 +60,7 @@
           @next-step="handleNextStep"
           @add-log="addLog"
           @update-status="updateStatus"
+          @new-simulation="handleNewSimulation"
         />
       </div>
     </main>
@@ -72,7 +73,7 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step3Simulation from '../components/Step3Simulation.vue'
 import { getProject, getGraphData } from '../api/graph'
-import { getSimulation, getSimulationConfig, stopSimulation, closeSimulationEnv, getEnvStatus } from '../api/simulation'
+import { getSimulation, getSimulationConfig, createSimulation, stopSimulation, closeSimulationEnv, getEnvStatus } from '../api/simulation'
 
 const route = useRoute()
 const router = useRouter()
@@ -196,6 +197,32 @@ const handleNextStep = () => {
   // Step3Simulation 组件会直接处理报告生成和路由跳转
   // 这个方法仅作为备用
   addLog('进入 Step 4: 报告生成')
+}
+
+const handleNewSimulation = async () => {
+  if (!projectData.value) return
+  addLog('创建新模拟实例（复用已有配置）...')
+  try {
+    const res = await createSimulation({
+      project_id: projectData.value.project_id,
+      graph_id: projectData.value.graph_id,
+      clone_from: currentSimulationId.value
+    })
+    if (res.success && res.data) {
+      const newSimId = res.data.simulation_id
+      addLog(`新模拟实例已创建: ${newSimId} (状态: ${res.data.status})`)
+      // Navigate to the new simulation — if cloned, it goes straight to start
+      if (res.data.status === 'ready') {
+        router.push({ name: 'SimulationRun', params: { simulationId: newSimId } })
+      } else {
+        router.push({ name: 'Simulation', params: { simulationId: newSimId } })
+      }
+    } else {
+      addLog(`创建失败: ${res.error || '未知错误'}`)
+    }
+  } catch (err) {
+    addLog(`创建异常: ${err.message}`)
+  }
 }
 
 // --- Data Logic ---

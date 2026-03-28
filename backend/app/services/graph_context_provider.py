@@ -136,6 +136,9 @@ class GraphContextProvider:
                 from_uid = edge.get("from_uid", "")
                 to_uid = edge.get("to_uid", "")
                 edge_type = edge.get("edge_type", "")
+                # edge_type can be a dict from some API responses — normalize to string
+                if not isinstance(edge_type, str):
+                    edge_type = str(edge_type) if edge_type else ""
 
                 self._entity_edges.setdefault(from_uid, []).append(edge)
 

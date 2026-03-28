@@ -90,14 +90,21 @@
         </div>
       </div>
 
-      <div class="action-controls">
-        <button 
+      <div class="action-controls" style="display: flex; gap: 8px;">
+        <button
+          v-if="phase === 2"
+          class="action-btn secondary"
+          @click="$emit('new-simulation')"
+        >
+          + 开始新模拟
+        </button>
+        <button
           class="action-btn primary"
           :disabled="phase !== 2 || isGeneratingReport"
           @click="handleNextStep"
         >
           <span v-if="isGeneratingReport" class="loading-spinner-small"></span>
-          {{ isGeneratingReport ? '启动中...' : '开始生成结果报告' }} 
+          {{ isGeneratingReport ? '启动中...' : '开始生成结果报告' }}
           <span v-if="!isGeneratingReport" class="arrow-icon">→</span>
         </button>
       </div>
@@ -308,7 +315,7 @@ const props = defineProps({
   systemLogs: Array
 })
 
-const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
+const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status', 'new-simulation'])
 
 const router = useRouter()
 

@@ -426,7 +426,8 @@
             <span class="step-title">准备完成</span>
           </div>
           <div class="step-status">
-            <span v-if="phase >= 4" class="badge processing">进行中</span>
+            <span v-if="simulationStatus === 'running'" class="badge processing">进行中</span>
+            <span v-else-if="phase >= 4" class="badge success">就绪</span>
             <span v-else class="badge pending">等待</span>
           </div>
         </div>
@@ -510,18 +511,18 @@
           </div>
 
           <div class="action-group dual">
-            <button 
+            <button
               class="action-btn secondary"
               @click="$emit('go-back')"
             >
               ← 返回图谱构建
             </button>
-            <button 
+            <button
               class="action-btn primary"
               :disabled="phase < 4"
               @click="handleStartSimulation"
             >
-              开始双世界并行模拟 ➝
+              {{ hasSimulationRun ? '查看模拟 ➝' : '开始双世界并行模拟 ➝' }}
             </button>
           </div>
         </div>
@@ -645,10 +646,16 @@ const props = defineProps({
   simulationId: String,  // 从父组件传入
   projectData: Object,
   graphData: Object,
-  systemLogs: Array
+  systemLogs: Array,
+  simulationStatus: String  // 'running' | 'completed' | 'ready' | etc.
 })
 
 const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
+
+// Computed
+const hasSimulationRun = computed(() =>
+  ['running', 'completed'].includes(props.simulationStatus)
+)
 
 // State
 const phase = ref(0) // 0: 初始化, 1: 生成人设, 2: 生成配置, 3: 完成

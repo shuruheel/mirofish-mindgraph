@@ -53,6 +53,7 @@
           :projectData="projectData"
           :graphData="graphData"
           :systemLogs="systemLogs"
+          :simulationStatus="simulationStatus"
           @go-back="handleGoBack"
           @next-step="handleNextStep"
           @add-log="addLog"
@@ -69,7 +70,7 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, getGraphData } from '../api/graph'
-import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
+import { getSimulation, createSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
 
 const route = useRoute()
 const router = useRouter()
@@ -142,6 +143,31 @@ const handleGoBack = () => {
     router.push({ name: 'Process', params: { projectId: projectData.value.project_id } })
   } else {
     router.push('/')
+  }
+}
+
+const handleNewSimulation = async () => {
+  if (!projectData.value) return
+  addLog('创建新模拟实例（复用已有配置）...')
+  try {
+    const res = await createSimulation({
+      project_id: projectData.value.project_id,
+      graph_id: projectData.value.graph_id,
+      clone_from: currentSimulationId.value
+    })
+    if (res.success && res.data) {
+      const newSimId = res.data.simulation_id
+      addLog(`新模拟实例已创建: ${newSimId} (状态: ${res.data.status})`)
+      if (res.data.status === 'ready') {
+        router.push({ name: 'SimulationRun', params: { simulationId: newSimId } })
+      } else {
+        router.push({ name: 'Simulation', params: { simulationId: newSimId } })
+      }
+    } else {
+      addLog(`创建失败: ${res.error || '未知错误'}`)
+    }
+  } catch (err) {
+    addLog(`创建异常: ${err.message}`)
   }
 }
 
@@ -235,15 +261,18 @@ const forceStopSimulation = async () => {
   }
 }
 
+const simulationStatus = ref(null) // 'created' | 'preparing' | 'ready' | 'running' | 'completed' | 'failed'
+
 const loadSimulationData = async () => {
   try {
     addLog(`加载模拟数据: ${currentSimulationId.value}`)
-    
+
     // 获取 simulation 信息
     const simRes = await getSimulation(currentSimulationId.value)
     if (simRes.success && simRes.data) {
       const simData = simRes.data
-      
+      simulationStatus.value = simData.status || null
+
       // 获取 project 信息
       if (simData.project_id) {
         const projRes = await getProject(simData.project_id)

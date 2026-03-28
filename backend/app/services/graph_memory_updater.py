@@ -484,7 +484,7 @@ class GraphMemoryUpdater:
         self._total_items_sent += len(activities)
         logger.info(
             f"成功发送 {len(activities)} 条{display_name}活动 "
-            f"(claims={claims_sent}, traces={traces_sent}) 到图谱 {self.graph_id}"
+            f"(journals={journals_sent}, traces={traces_sent}) 到图谱 {self.graph_id}"
         )
 
     def _flush_remaining(self):
@@ -570,7 +570,6 @@ class GraphMemoryUpdater:
             self.client.capture_observation(
                 content,
                 project_id=self.graph_id,
-                session_uid=self._session_uid,
                 timestamp=datetime.now().isoformat(),
             )
         except Exception as e:

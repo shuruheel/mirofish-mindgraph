@@ -219,13 +219,15 @@ def create_simulation():
                 }), 400
         
         manager = SimulationManager()
+        clone_from = data.get('clone_from')
 
         # Deduplicate: cancel less-progressed simulations for the same project
+        # Skip dedup when explicitly cloning (user wants a new simulation)
         existing = manager.list_simulations(project_id=project_id)
         active_statuses = {"created", "preparing", "ready", "running"}
         active_sims = [s for s in existing if s.status.value in active_statuses]
 
-        if active_sims:
+        if active_sims and not clone_from:
             # Score by progress: running > ready > preparing > created
             progress_order = {"running": 4, "ready": 3, "preparing": 2, "created": 1}
             active_sims.sort(
@@ -254,6 +256,32 @@ def create_simulation():
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
         )
+
+        # Clone profiles and config from an existing simulation if requested
+        clone_from = data.get('clone_from')
+        if clone_from:
+            import shutil
+            src_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, clone_from)
+            dst_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, state.simulation_id)
+            files_copied = []
+            for fname in ['reddit_profiles.json', 'twitter_profiles.csv', 'simulation_config.json']:
+                src = os.path.join(src_dir, fname)
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(dst_dir, fname))
+                    files_copied.append(fname)
+            if files_copied:
+                logger.info(f"从 {clone_from} 克隆文件到 {state.simulation_id}: {files_copied}")
+                # Update state to skip preparation
+                state.status = SimulationStatus.READY
+                state.config_generated = True
+                # Copy entity/profile counts from source
+                src_state = manager.get_simulation(clone_from)
+                if src_state:
+                    state.entities_count = src_state.entities_count
+                    state.profiles_count = src_state.profiles_count
+                    state.entity_types = src_state.entity_types
+                    state.config_reasoning = src_state.config_reasoning
+                manager._save_simulation_state(state)
 
         return jsonify({
             "success": True,

@@ -193,7 +193,9 @@ class GraphMemoryUpdater:
     # 最小内容长度，低于此阈值的不作为声明处理
     MIN_CLAIM_CONTENT_LENGTH = 20
     # 高影响力动作阈值 — 超过此长度的内容动作额外记录为Decision
-    HIGH_IMPACT_CONTENT_LENGTH = 50
+    HIGH_IMPACT_CONTENT_LENGTH = 80
+    # 每批最多记录的决策数（避免API调用爆炸）
+    MAX_DECISIONS_PER_BATCH = 3
     # 社交决策动作 — 记录为Decision
     SOCIAL_DECISION_ACTIONS = {"FOLLOW", "MUTE"}
     # 正面/负面标记词（用于简单异常检测）
@@ -404,6 +406,7 @@ class GraphMemoryUpdater:
         trace_texts = []
         journals_sent = 0
         traces_sent = 0
+        decisions_in_batch = 0  # Rate-limit decisions per batch
 
         # Collect links to create in batch after all journals are written
         pending_links = []  # [(from_uid, to_uid)]
@@ -416,7 +419,6 @@ class GraphMemoryUpdater:
                 if (activity.action_type in self.CONTENT_ACTIONS
                         and len(content) >= self.MIN_CLAIM_CONTENT_LENGTH):
 
-                    from datetime import datetime
                     journal_content = f"{activity.agent_name}: {content}"
                     result = self.client.create_journal(
                         content=journal_content,
@@ -438,12 +440,16 @@ class GraphMemoryUpdater:
 
                     # 异常检测：Agent行为是否与立场矛盾
                     self._check_anomaly(activity, content)
-                    # 高影响力决策记录
-                    self._record_decision(activity, content)
+                    # 高影响力决策记录（rate-limited）
+                    if decisions_in_batch < self.MAX_DECISIONS_PER_BATCH:
+                        if self._record_decision(activity, content):
+                            decisions_in_batch += 1
                 else:
-                    # 社交决策记录（FOLLOW/MUTE）
-                    if activity.action_type in self.SOCIAL_DECISION_ACTIONS:
-                        self._record_decision(activity, "")
+                    # 社交决策记录（FOLLOW/MUTE, rate-limited）
+                    if (activity.action_type in self.SOCIAL_DECISION_ACTIONS
+                            and decisions_in_batch < self.MAX_DECISIONS_PER_BATCH):
+                        if self._record_decision(activity, ""):
+                            decisions_in_batch += 1
                     # 社交动作 → 收集为trace文本
                     trace_texts.append(activity.to_episode_text())
 
@@ -500,9 +506,11 @@ class GraphMemoryUpdater:
 
         self._total_sent += 1
         self._total_items_sent += len(activities)
+        queue_remaining = self._activity_queue.qsize()
         logger.info(
             f"成功发送 {len(activities)} 条{display_name}活动 "
-            f"(journals={journals_sent}, traces={traces_sent}) 到图谱 {self.graph_id}"
+            f"(journals={journals_sent}, traces={traces_sent}, decisions={decisions_in_batch}) "
+            f"到图谱 {self.graph_id} [queue={queue_remaining}]"
         )
 
     def _flush_remaining(self):
@@ -533,20 +541,28 @@ class GraphMemoryUpdater:
     def _link_agent_to_nodes(self, agent_uid: str, target_uids: List[str],
                              edge_type: str):
         """
-        创建Agent节点到目标节点的边
+        创建Agent节点到目标节点的边（batch API优先）
 
-        在后台批量创建，失败不阻塞主流程。
+        使用batch_create一次创建所有边，失败时回退到逐条创建。
         """
-        for uid in target_uids:
-            try:
-                self.client.add_link(
-                    from_uid=agent_uid,
-                    to_uid=uid,
-                    edge_type=edge_type,
-                    project_id=self.graph_id,
-                )
-            except Exception as e:
-                logger.debug(f"创建{edge_type}边失败 ({agent_uid[:8]}→{uid[:8]}): {e}")
+        if not target_uids:
+            return
+        batch_edges = [
+            {"from_uid": agent_uid, "to_uid": uid, "edge_type": edge_type}
+            for uid in target_uids
+        ]
+        try:
+            self.client.batch_create(edges=batch_edges)
+        except Exception as e:
+            logger.debug(f"批量创建{edge_type}边失败，回退逐条: {e}")
+            for uid in target_uids:
+                try:
+                    self.client.add_link(
+                        from_uid=agent_uid, to_uid=uid,
+                        edge_type=edge_type, project_id=self.graph_id,
+                    )
+                except Exception:
+                    pass
 
     # ═══════════════════════════════════════
     # 轮间衰减 + 模拟后蒸馏 + 异常检测 + 决策记录
@@ -556,27 +572,13 @@ class GraphMemoryUpdater:
         """
         轮间显著度衰减 — 模拟记忆的自然遗忘
 
-        在每轮结束时由simulation_runner调用。
-        half_life设为3倍轮时长，即信息在~3轮后衰减到50%。
-
-        SKIPPED for source="mindgraph" (connect mode) because decay() is
-        a global operation — it would degrade salience across the user's
-        entire existing MindGraph graph, not just simulation-created nodes.
+        DISABLED: decay() is a global operation that degrades salience across
+        the entire MindGraph graph (book knowledge + simulation data), not
+        just simulation-created nodes. This harms retrieval quality for the
+        graph context provider. Simulations are short-lived; natural recency
+        bias in retrieval handles salience implicitly.
         """
-        if self.source == "mindgraph":
-            logger.debug(f"跳过轮间衰减 (connect mode): round={round_num}")
-            return
-
-        half_life_secs = self.minutes_per_round * 60 * 3
-        try:
-            self.client.decay_salience(
-                project_id=self.graph_id,
-                half_life_secs=half_life_secs,
-                min_salience=0.05,
-            )
-            logger.info(f"轮间衰减完成: round={round_num}, half_life={half_life_secs}s")
-        except Exception as e:
-            logger.warning(f"轮间衰减失败: {e}")
+        logger.debug(f"跳过轮间衰减 (全局操作已禁用): round={round_num}")
 
     def record_round_end(self, round_num: int, platform: str,
                          actions_count: int = 0):
@@ -637,49 +639,93 @@ class GraphMemoryUpdater:
             except Exception as e:
                 logger.debug(f"记录异常失败: {e}")
 
-    def _record_decision(self, activity: AgentActivity, content: str):
+    def _record_decision(self, activity: AgentActivity, content: str) -> bool:
         """
         将高影响力动作记录为Decision节点
 
-        从Agent的stance/sentiment推断决策理由，无需OASIS内部推理。
-        创建 Agent→Decision 的DECIDED边。
+        Uses batch API to create Decision + Option nodes in a single call,
+        then links Agent→Decision via batch edges.
+
+        Returns True if a decision was recorded (for rate-limiting).
         """
         stance = activity.action_args.get("stance", "neutral")
         sentiment = activity.action_args.get("sentiment_bias", 0.0)
         agent_uid = self._agent_node_uids.get(activity.agent_name)
 
         if activity.action_type in self.CONTENT_ACTIONS and len(content) >= self.HIGH_IMPACT_CONTENT_LENGTH:
+            description = f"{activity.agent_name} decided to publicly comment"
             rationale = f"Agent stance: {stance}, sentiment: {sentiment}"
             try:
-                decision_result = self.client.record_decision(
-                    agent_name=activity.agent_name,
-                    description=f"{activity.agent_name} decided to publicly comment",
-                    chosen_option=content[:200],
-                    rationale=rationale,
-                    project_id=self.graph_id,
-                )
-                decision_uid = decision_result.get("uid", "") if isinstance(decision_result, dict) else ""
-                if agent_uid and decision_uid:
-                    self._link_agent_to_nodes(agent_uid, [decision_uid], "DECIDED")
+                # Batch create Decision + Option nodes in one call
+                result = self.client.batch_create(nodes=[
+                    {
+                        "label": description[:100],
+                        "props": {
+                            "_type": "Decision",
+                            "description": description,
+                            "rationale": rationale,
+                        },
+                        "agent_id": self.graph_id,
+                    },
+                    {
+                        "label": content[:100],
+                        "props": {
+                            "_type": "Option",
+                            "description": content[:200],
+                        },
+                        "agent_id": self.graph_id,
+                    },
+                ])
+                # Link Agent → Decision if we got UIDs back
+                node_uids = result.get("node_uids", []) if isinstance(result, dict) else []
+                if agent_uid and node_uids:
+                    decision_uid = node_uids[0] if len(node_uids) > 0 else ""
+                    option_uid = node_uids[1] if len(node_uids) > 1 else ""
+                    edges = []
+                    if decision_uid:
+                        edges.append({"from_uid": agent_uid, "to_uid": decision_uid, "edge_type": "DECIDED"})
+                    if decision_uid and option_uid:
+                        edges.append({"from_uid": decision_uid, "to_uid": option_uid, "edge_type": "HasOption"})
+                    if edges:
+                        try:
+                            self.client.batch_create(edges=edges)
+                        except Exception:
+                            pass
+                return True
             except Exception as e:
                 logger.debug(f"记录决策失败: {e}")
+                return False
 
         elif activity.action_type in self.SOCIAL_DECISION_ACTIONS:
             target = activity.action_args.get("target_user_name", "unknown")
             verb = "follow" if activity.action_type == "FOLLOW" else "mute"
+            description = f"{activity.agent_name} decided to {verb} {target}"
             try:
-                decision_result = self.client.record_decision(
-                    agent_name=activity.agent_name,
-                    description=f"{activity.agent_name} decided to {verb} {target}",
-                    chosen_option=f"{verb} {target}",
-                    rationale="Social alignment decision",
-                    project_id=self.graph_id,
-                )
-                decision_uid = decision_result.get("uid", "") if isinstance(decision_result, dict) else ""
-                if agent_uid and decision_uid:
-                    self._link_agent_to_nodes(agent_uid, [decision_uid], "DECIDED")
+                result = self.client.batch_create(nodes=[
+                    {
+                        "label": description[:100],
+                        "props": {
+                            "_type": "Decision",
+                            "description": description,
+                            "rationale": "Social alignment decision",
+                        },
+                        "agent_id": self.graph_id,
+                    },
+                ])
+                node_uids = result.get("node_uids", []) if isinstance(result, dict) else []
+                if agent_uid and node_uids:
+                    try:
+                        self.client.batch_create(edges=[
+                            {"from_uid": agent_uid, "to_uid": node_uids[0], "edge_type": "DECIDED"}
+                        ])
+                    except Exception:
+                        pass
+                return True
             except Exception as e:
                 logger.debug(f"记录社交决策失败: {e}")
+                return False
+
+        return False
 
     def _distill_simulation(self):
         """

@@ -302,26 +302,39 @@ class GraphContextProvider:
             self._round_semantic_round = round_num
             logger.warning(f"Round {round_num}: semantic retrieval failed: {e}")
 
-    @staticmethod
-    def _summarize_feed(post_content: str) -> str:
-        """
-        Summarize feed posts into a concise topic query for graph retrieval.
+    # Cached OpenAI client for feed summarization (created once, reused)
+    _llm_client = None
+    _llm_model = ""
 
-        Uses the LLM (via OpenAI SDK) to distill the posts into 2-3 sentences
-        capturing the key topics, entities, and themes being discussed.
-        """
-        try:
+    @classmethod
+    def _get_llm_client(cls):
+        """Get or create a cached OpenAI client for feed summarization."""
+        if cls._llm_client is None:
             from openai import OpenAI
 
             api_key = os.environ.get("LLM_API_KEY", "")
             base_url = os.environ.get("LLM_BASE_URL", "")
-            model = os.environ.get("LLM_MODEL_NAME", "")
+            cls._llm_model = os.environ.get("LLM_MODEL_NAME", "")
 
-            if not api_key or not model:
+            if not api_key or not cls._llm_model:
+                return None, ""
+
+            cls._llm_client = OpenAI(api_key=api_key, base_url=base_url or None)
+        return cls._llm_client, cls._llm_model
+
+    @classmethod
+    def _summarize_feed(cls, post_content: str) -> str:
+        """
+        Summarize feed posts into a concise topic query for graph retrieval.
+
+        Uses the LLM (via OpenAI SDK) to distill the posts into key terms.
+        The OpenAI client is cached and reused across rounds.
+        """
+        try:
+            client, model = cls._get_llm_client()
+            if not client:
                 logger.debug("LLM not configured, skipping feed summarization")
                 return ""
-
-            client = OpenAI(api_key=api_key, base_url=base_url or None)
 
             # Truncate to avoid sending too much to the LLM
             truncated = post_content[:2000]

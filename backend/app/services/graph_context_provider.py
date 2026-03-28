@@ -277,7 +277,7 @@ class GraphContextProvider:
                 self._retrieval_client = MindGraph(
                     self._client.base_url,
                     api_key=self._client.api_key,
-                    timeout=120.0,  # One call per round in a background thread
+                    timeout=120.0,  # Background thread — no rush
                 )
 
             t0 = time.time()
@@ -332,16 +332,17 @@ class GraphContextProvider:
                     {
                         "role": "system",
                         "content": (
-                            "Summarize the key topics discussed in these social media "
-                            "posts in 2-3 concise sentences in English. Focus on the "
-                            "main themes, entities, events, and geopolitical dynamics. "
-                            "This summary will be used as a search query."
+                            "Extract the key topics from these posts as a short "
+                            "search query (under 10 words). List the main entities, "
+                            "events, or themes separated by spaces. No sentences, "
+                            "just key terms. Example: 'Kissinger China diplomacy "
+                            "nuclear proliferation trade policy'"
                         ),
                     },
                     {"role": "user", "content": truncated},
                 ],
-                max_tokens=150,
-                temperature=0.3,
+                max_tokens=50,
+                temperature=0.0,
             )
 
             summary = response.choices[0].message.content.strip()
@@ -356,7 +357,7 @@ class GraphContextProvider:
         """Block until the current round's retrieval is done (if any)."""
         if self._round_retrieval_future is not None:
             try:
-                self._round_retrieval_future.result(timeout=125)
+                self._round_retrieval_future.result(timeout=90)
             except Exception:
                 pass
             self._round_retrieval_future = None

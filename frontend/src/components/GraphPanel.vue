@@ -302,14 +302,22 @@ const entityTypes = computed(() => {
 const formatDateTime = (dateStr) => {
   if (!dateStr) return ''
   try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
+    let date
+    // Handle Unix timestamp strings (e.g. "1774650110.2531497")
+    const num = Number(dateStr)
+    if (!isNaN(num) && num > 1e9 && num < 1e11) {
+      date = new Date(num * 1000)
+    } else {
+      date = new Date(dateStr)
+    }
+    if (isNaN(date.getTime())) return dateStr
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
       year: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
-      hour12: true 
+      hour12: true
     })
   } catch {
     return dateStr

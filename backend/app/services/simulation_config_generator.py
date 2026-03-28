@@ -213,8 +213,10 @@ class SimulationConfigGenerator:
     # 上下文最大字符数
     MAX_CONTEXT_LENGTH = 50000
     # 每批生成的Agent数量
-    AGENTS_PER_BATCH = 15
-    
+    AGENTS_PER_BATCH = 50
+    # 每轮最大活跃Agent数（硬上限，防止LLM生成过高值导致模拟极慢）
+    MAX_AGENTS_PER_HOUR = 30
+
     # 各步骤的上下文截断长度（字符数）
     TIME_CONFIG_CONTEXT_LENGTH = 10000   # 时间配置
     EVENT_CONFIG_CONTEXT_LENGTH = 8000   # 事件配置
@@ -686,11 +688,19 @@ class SimulationConfigGenerator:
         agents_per_hour_min = result.get("agents_per_hour_min", max(1, num_entities // 15))
         agents_per_hour_max = result.get("agents_per_hour_max", max(5, num_entities // 5))
         
-        # 验证并修正：确保不超过总agent数
+        # 硬上限：防止LLM生成过高值导致每轮数百个LLM调用
+        hard_cap = self.MAX_AGENTS_PER_HOUR
+        if agents_per_hour_max > hard_cap:
+            logger.warning(f"agents_per_hour_max ({agents_per_hour_max}) 超过硬上限 ({hard_cap})，已修正")
+            agents_per_hour_max = hard_cap
+        if agents_per_hour_min > hard_cap:
+            agents_per_hour_min = max(1, hard_cap // 3)
+
+        # 验证：确保不超过总agent数
         if agents_per_hour_min > num_entities:
             logger.warning(f"agents_per_hour_min ({agents_per_hour_min}) 超过总Agent数 ({num_entities})，已修正")
             agents_per_hour_min = max(1, num_entities // 10)
-        
+
         if agents_per_hour_max > num_entities:
             logger.warning(f"agents_per_hour_max ({agents_per_hour_max}) 超过总Agent数 ({num_entities})，已修正")
             agents_per_hour_max = max(agents_per_hour_min + 1, num_entities // 2)

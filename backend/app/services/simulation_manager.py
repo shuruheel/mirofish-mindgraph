@@ -135,6 +135,120 @@ class SimulationManager:
         # 内存中的模拟状态缓存
         self._simulations: Dict[str, SimulationState] = {}
     
+    def _sync_entities_with_profiles(
+        self, entities: List, sim_dir: str
+    ) -> List:
+        """
+        Deduplicate profiles on disk, then reorder entities to match.
+
+        OASIS maps agents by index: agent_id=0 gets profile row 0, etc.
+        The config generator must produce agent_configs in the same order
+        so that agent_id N's config matches profile row N's persona/bio.
+
+        Steps:
+        1. Load profiles from disk
+        2. Deduplicate profiles (keep first occurrence of each name)
+        3. Write deduplicated profiles back to disk
+        4. Reorder entities to match the deduplicated profile order
+
+        Returns the entity list in profile order, or the original list
+        if no profiles exist.
+        """
+        import csv as csv_mod
+
+        reddit_path = os.path.join(sim_dir, "reddit_profiles.json")
+        twitter_path = os.path.join(sim_dir, "twitter_profiles.csv")
+
+        # --- Step 1+2: Load and deduplicate profiles ---
+        profile_names = []
+
+        if os.path.exists(reddit_path):
+            try:
+                with open(reddit_path, 'r', encoding='utf-8') as f:
+                    profiles = json.load(f)
+                seen = set()
+                deduped = []
+                for p in profiles:
+                    name = p.get("name", "")
+                    if name and name not in seen:
+                        seen.add(name)
+                        deduped.append(p)
+                if len(deduped) < len(profiles):
+                    logger.info(f"Reddit profiles去重: {len(profiles)} → {len(deduped)}")
+                    # Rewrite user_ids to be sequential
+                    for i, p in enumerate(deduped):
+                        p["user_id"] = i
+                    with open(reddit_path, 'w', encoding='utf-8') as f:
+                        json.dump(deduped, f, ensure_ascii=False, indent=2)
+                profile_names = [p.get("name", "") for p in deduped]
+            except Exception as e:
+                logger.warning(f"加载Reddit profiles失败: {e}")
+
+        if os.path.exists(twitter_path):
+            try:
+                with open(twitter_path, 'r', encoding='utf-8') as f:
+                    reader = csv_mod.DictReader(f)
+                    rows = list(reader)
+                    fieldnames = reader.fieldnames
+                seen = set()
+                deduped_rows = []
+                for row in rows:
+                    name = row.get("name", "")
+                    if name and name not in seen:
+                        seen.add(name)
+                        deduped_rows.append(row)
+                if len(deduped_rows) < len(rows):
+                    logger.info(f"Twitter profiles去重: {len(rows)} → {len(deduped_rows)}")
+                    # Rewrite user_ids to be sequential
+                    for i, row in enumerate(deduped_rows):
+                        row["user_id"] = str(i)
+                    with open(twitter_path, 'w', encoding='utf-8', newline='') as f:
+                        writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(deduped_rows)
+                if not profile_names:  # Only use twitter if reddit didn't set names
+                    profile_names = [r.get("name", "") for r in deduped_rows]
+            except Exception as e:
+                logger.warning(f"加载Twitter profiles失败: {e}")
+
+        if not profile_names:
+            return entities
+
+        # --- Step 3: Build name→entity lookup ---
+        entity_by_name = {}
+        for entity in entities:
+            if entity.name not in entity_by_name:
+                entity_by_name[entity.name] = entity
+
+        # --- Step 4: Reorder entities to match profile order ---
+        # ONLY include entities that have a matching profile.
+        # Entities without profiles would cause OASIS to hang (no persona).
+        reordered = []
+        seen_names = set()
+        skipped = []
+        for name in profile_names:
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            entity = entity_by_name.get(name)
+            if entity:
+                reordered.append(entity)
+            else:
+                logger.warning(f"Profile '{name}' 无匹配实体")
+
+        # Log entities that have no profile (will NOT be included)
+        for entity in entities:
+            if entity.name not in seen_names:
+                skipped.append(entity.name)
+        if skipped:
+            logger.info(f"跳过 {len(skipped)} 个无Profile的实体: {skipped[:5]}...")
+
+        logger.info(
+            f"实体同步: {len(entities)} entities → {len(reordered)} "
+            f"(profiles: {len(profile_names)}, skipped: {len(skipped)})"
+        )
+        return reordered
+
     def _get_simulation_dir(self, simulation_id: str) -> str:
         """获取模拟数据目录"""
         sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
@@ -407,7 +521,13 @@ class SimulationManager:
                     AgentActivityConfig(**ac) for ac in config_data.get("agent_configs", [])
                 ]
             else:
-                num_agent_batches = (len(filtered.entities) + 14) // 15  # ceil(n/15)
+                # Sync entity order with existing profiles to ensure config agent_ids
+                # match profile user_ids (OASIS maps by index, not by name)
+                config_entities = self._sync_entities_with_profiles(
+                    filtered.entities, sim_dir
+                )
+
+                num_agent_batches = (len(config_entities) + 14) // 15  # ceil(n/15)
                 total_config_steps = 3 + num_agent_batches
 
                 def config_progress(step, total, msg):
@@ -423,7 +543,7 @@ class SimulationManager:
                     graph_id=state.graph_id,
                     simulation_requirement=simulation_requirement,
                     document_text=document_text,
-                    entities=filtered.entities,
+                    entities=config_entities,
                     enable_twitter=state.enable_twitter,
                     enable_reddit=state.enable_reddit,
                     progress_callback=config_progress,
@@ -459,7 +579,7 @@ class SimulationManager:
 
                     # 使用 find_or_create_entity 确保幂等（避免重试时重复创建）
                     agent_node_uids = {}  # agent_name → agent_node_uid
-                    goals_created = 0
+                    journals_created = 0
 
                     # Batch: collect all agent data first, then create nodes
                     for agent_config in sim_params.agent_configs:
@@ -490,35 +610,37 @@ class SimulationManager:
                         except Exception as e:
                             logger.warning(f"注册Agent节点失败 ({name}): {e}")
 
-                        # 为非中立Agent创建Goal节点
+                        # 为非中立Agent创建Journal条目记录立场（Memory层）
                         if stance != "neutral":
                             try:
-                                goal_result = mg_client.create_goal(
-                                    label=f"{name}: {stance} stance",
-                                    project_id=state.graph_id,
-                                    description=(
-                                        f"Agent {name} has a {stance} stance "
-                                        f"with sentiment bias {sentiment}"
-                                    ),
-                                    priority="high" if abs(sentiment) > 0.5 else "medium",
+                                journal_content = (
+                                    f"{name} holds a {stance} stance "
+                                    f"with sentiment bias {sentiment:.2f} "
+                                    f"and influence weight {influence:.2f}"
                                 )
-                                goals_created += 1
-                                # 链接Agent → Goal
-                                goal_uid = goal_result.get("uid", "")
+                                journal_result = mg_client.create_journal(
+                                    content=journal_content,
+                                    project_id=state.graph_id,
+                                    journal_type="stance",
+                                    tags=[stance, entity_type],
+                                )
+                                journals_created += 1
+                                # 链接Agent → Journal
+                                journal_uid = journal_result.get("uid", "")
                                 agent_uid = agent_node_uids.get(name, "")
-                                if goal_uid and agent_uid:
+                                if journal_uid and agent_uid:
                                     mg_client.add_link(
                                         from_uid=agent_uid,
-                                        to_uid=goal_uid,
-                                        edge_type="HAS_GOAL",
+                                        to_uid=journal_uid,
+                                        edge_type="HAS_JOURNAL",
                                         project_id=state.graph_id,
                                     )
                             except Exception as e:
-                                logger.warning(f"创建Goal节点失败 ({name}): {e}")
+                                logger.warning(f"创建Journal条目失败 ({name}): {e}")
 
                     logger.info(
                         f"已注册 {len(agent_node_uids)} 个Agent节点, "
-                        f"{goals_created} 个Goal节点"
+                        f"{journals_created} 个Journal条目"
                     )
 
                     # 保存agent_node_uids映射到模拟目录

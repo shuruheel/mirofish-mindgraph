@@ -100,10 +100,7 @@ def generate_report():
         
         simulation_requirement = project.simulation_requirement
         if not simulation_requirement:
-            return jsonify({
-                "success": False,
-                "error": "缺少模拟需求描述"
-            }), 400
+            simulation_requirement = "分析模拟中群体互动与信息传播的关键发现、重要趋势和代表性事件"
         
         # 提前生成 report_id，以便立即返回给前端
         import uuid

@@ -172,13 +172,21 @@ const handleNextStep = async (params = {}) => {
       if (!currentSimulationId.value) return
     }
 
+    // Step 2 → Step 3: navigate to SimulationRunView
+    if (nextStep === 3 && currentSimulationId.value) {
+      const query = {}
+      if (params.maxRounds) {
+        query.maxRounds = params.maxRounds
+      }
+      router.push({
+        path: `/simulation/${currentSimulationId.value}/start`,
+        query
+      })
+      return
+    }
+
     currentStep.value = nextStep
     addLog(`进入 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
-
-    // 如果是从 Step 2 进入 Step 3，记录模拟轮数配置
-    if (currentStep.value === 3 && params.maxRounds) {
-      addLog(`自定义模拟轮数: ${params.maxRounds} 轮`)
-    }
   }
 }
 

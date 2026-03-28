@@ -395,7 +395,6 @@ const doStartSimulation = async () => {
     const params = {
       simulation_id: props.simulationId,
       platform: 'parallel',
-      force: true,  // 强制重新开始
       enable_graph_memory_update: true  // 开启动态图谱更新
     }
     
@@ -684,9 +683,31 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
+onMounted(async () => {
   addLog('Step3 模拟运行初始化')
   if (props.simulationId) {
+    // Check if simulation is already running or completed — resume monitoring instead of restarting
+    try {
+      const statusRes = await getRunStatus(props.simulationId)
+      const status = statusRes.data?.runner_status
+      if (status === 'running' || status === 'starting') {
+        addLog(`✓ 检测到模拟${status === 'running' ? '正在运行' : '正在启动'}，恢复状态监控`)
+        phase.value = 1
+        runStatus.value = statusRes.data
+        startStatusPolling()
+        startDetailPolling()
+        return
+      }
+      if (status === 'completed' || status === 'stopped') {
+        addLog(`✓ 检测到模拟已${status === 'completed' ? '完成' : '停止'}，加载结果`)
+        phase.value = 2
+        runStatus.value = statusRes.data
+        startDetailPolling()
+        return
+      }
+    } catch (e) {
+      // No existing run state — proceed to start
+    }
     doStartSimulation()
   }
 })

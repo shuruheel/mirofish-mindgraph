@@ -334,7 +334,19 @@ class SimulationRunner:
         # 检查是否已在运行
         existing = cls.get_run_state(simulation_id)
         if existing and existing.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
-            raise ValueError(f"模拟已在运行中: {simulation_id}")
+            # Verify the process is actually alive before blocking
+            pid = existing.process_pid
+            process_alive = False
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    process_alive = True
+                except OSError:
+                    pass
+            if process_alive:
+                raise ValueError(f"模拟已在运行中: {simulation_id}")
+            # Stale state — process is dead, allow restart
+            logger.info(f"模拟 {simulation_id} 状态为 {existing.runner_status.value} 但进程已死亡 (PID={pid})，允许重启")
         
         # 加载模拟配置
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)

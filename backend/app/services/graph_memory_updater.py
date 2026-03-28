@@ -393,51 +393,52 @@ class GraphMemoryUpdater:
         批量发送活动到MindGraph图谱
 
         结构化写入策略：
-        - 内容性动作(CREATE_POST/COMMENT/QUOTE) → POST /ingest/chunk (MindGraph自动认知类型提取)
-        - 社交动作(LIKE/FOLLOW/REPOST等) → POST /memory/session (trace条目)
+        - 内容性动作(CREATE_POST/COMMENT/QUOTE) → Journal节点（Memory层）
+        - 社交动作(LIKE/FOLLOW/REPOST等) → Trace条目（Memory层）
+        - 高影响力决策(FOLLOW/MUTE) → Decision/Option节点（Intent层）
         """
         if not activities:
             return
 
         display_name = self._get_platform_display_name(platform)
         trace_texts = []
-        claims_sent = 0
+        journals_sent = 0
         traces_sent = 0
 
         for activity in activities:
             try:
                 content = self._get_content(activity)
 
-                # 内容性动作 → MindGraph自动认知类型提取
+                # 内容性动作 → Journal节点（Memory层，无认知提取）
                 if (activity.action_type in self.CONTENT_ACTIONS
                         and len(content) >= self.MIN_CLAIM_CONTENT_LENGTH):
 
-                    result = self.client.ingest_agent_post(
-                        agent_name=activity.agent_name,
-                        content=content,
+                    from datetime import datetime
+                    journal_content = f"{activity.agent_name}: {content}"
+                    result = self.client.create_journal(
+                        content=journal_content,
                         project_id=self.graph_id,
-                        platform=platform,
-                        round_num=activity.round_num,
+                        journal_type="simulation_post",
+                        tags=[platform, activity.action_type,
+                              f"round_{activity.round_num}"],
+                        session_uid=self._session_uid,
                     )
 
-                    # 追踪提取产生的节点UID（用于模拟后蒸馏）
-                    extracted_uids = []
-                    if isinstance(result, dict):
-                        extracted_uids = result.get("extracted_node_uids", [])
-                        for uid in extracted_uids:
-                            self._created_epistemic_uids.append(uid)
-                        chunk_uid = result.get("chunk_uid", "")
-                        if chunk_uid:
-                            self._created_epistemic_uids.append(chunk_uid)
-
-                    # 创建 Agent→提取节点 的AUTHORED边
+                    # 链接 Agent → Journal
+                    journal_uid = result.get("uid", "") if isinstance(result, dict) else ""
                     agent_uid = self._agent_node_uids.get(activity.agent_name)
-                    if agent_uid and extracted_uids:
-                        self._link_agent_to_nodes(
-                            agent_uid, extracted_uids, "AUTHORED"
-                        )
+                    if journal_uid and agent_uid:
+                        try:
+                            self.client.add_link(
+                                from_uid=agent_uid,
+                                to_uid=journal_uid,
+                                edge_type="AUTHORED",
+                                project_id=self.graph_id,
+                            )
+                        except Exception:
+                            pass  # Non-critical
 
-                    claims_sent += 1
+                    journals_sent += 1
                     self._total_claims += 1
 
                     # 异常检测：Agent行为是否与立场矛盾
@@ -467,11 +468,11 @@ class GraphMemoryUpdater:
                         trace_type="simulation_activity"
                     )
                 else:
-                    # 降级：无会话时用chunk摄入
-                    self.client.ingest_chunk(
-                        combined_trace,
+                    # 降级：无会话时直接创建Journal
+                    self.client.create_journal(
+                        content=combined_trace,
                         project_id=self.graph_id,
-                        layers=["reality", "epistemic", "memory"]
+                        journal_type="simulation_trace",
                     )
                 traces_sent = len(trace_texts)
                 self._total_traces += traces_sent
@@ -565,7 +566,13 @@ class GraphMemoryUpdater:
         display_name = self._get_platform_display_name(platform)
         content = f"第{round_num}轮{display_name}模拟完成，共{actions_count}个动作"
         try:
-            self.client.capture_observation(content, project_id=self.graph_id)
+            from datetime import datetime
+            self.client.capture_observation(
+                content,
+                project_id=self.graph_id,
+                session_uid=self._session_uid,
+                timestamp=datetime.now().isoformat(),
+            )
         except Exception as e:
             logger.debug(f"记录轮次观察失败: {e}")
 

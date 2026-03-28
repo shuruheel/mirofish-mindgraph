@@ -886,21 +886,52 @@ class MindGraphClient:
         return decision
 
     # ═══════════════════════════════════════
+    # 记忆层 - Journal
+    # ═══════════════════════════════════════
+
+    def create_journal(self, content: str, project_id: str,
+                       journal_type: str = "stance", tags: Optional[List[str]] = None,
+                       session_uid: Optional[str] = None) -> Dict[str, Any]:
+        """创建Journal记忆条目（Memory层）"""
+        return self._with_retry(
+            self._mg.journal,
+            label=content[:100],
+            props={
+                "content": content,
+                "journal_type": journal_type,
+                "tags": tags or [],
+            },
+            session_uid=session_uid,
+            agent_id=project_id,
+            operation_name=f"创建Journal({journal_type})",
+        )
+
+    # ═══════════════════════════════════════
     # 现实层 - 观察记录
     # ═══════════════════════════════════════
 
     def capture_observation(self, content: str, project_id: str,
-                            observation_type: str = "simulation_event") -> Dict[str, Any]:
+                            observation_type: str = "simulation_event",
+                            session_uid: Optional[str] = None,
+                            timestamp: Optional[str] = None) -> Dict[str, Any]:
         """记录事实观察"""
-        return self._with_retry(
-            self._mg.capture,
+        props = {
+            "content": content,
+            "observation_type": observation_type,
+        }
+        if timestamp:
+            props["timestamp"] = timestamp
+        kwargs = dict(
             action="observation",
             label=content[:100],
-            props={
-                "content": content,
-                "observation_type": observation_type,
-            },
+            props=props,
             agent_id=project_id,
+        )
+        if session_uid:
+            kwargs["session_uid"] = session_uid
+        return self._with_retry(
+            self._mg.capture,
+            **kwargs,
             operation_name=f"记录观察({observation_type})",
         )
 

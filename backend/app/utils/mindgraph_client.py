@@ -636,6 +636,31 @@ class MindGraphClient:
             operation_name=f"创建边({edge_type})",
         )
 
+    def batch_create(self, nodes: Optional[List[Dict]] = None,
+                     edges: Optional[List[Dict]] = None) -> Dict[str, Any]:
+        """
+        Batch create nodes and/or edges in a single API call.
+
+        Args:
+            nodes: List of node dicts, each with {label, props: {_type, ...}, agent_id}
+            edges: List of edge dicts, each with {from_uid, to_uid, edge_type}
+
+        Returns:
+            {nodes_added, edges_added, node_uids, errors}
+        """
+        kwargs: Dict[str, Any] = {}
+        if nodes:
+            kwargs["nodes"] = nodes
+        if edges:
+            kwargs["edges"] = edges
+        if not kwargs:
+            return {"nodes_added": 0, "edges_added": 0, "node_uids": [], "errors": []}
+        return self._with_retry(
+            self._mg.batch,
+            operation_name=f"批量创建(nodes={len(nodes or [])}, edges={len(edges or [])})",
+            **kwargs,
+        )
+
     def add_edge(self, from_uid: str, to_uid: str, edge_type: str,
                  props: Optional[Dict] = None,
                  project_id: Optional[str] = None,
@@ -943,16 +968,14 @@ class MindGraphClient:
     def capture_observation(self, content: str, project_id: str,
                             observation_type: str = "simulation_event") -> Dict[str, Any]:
         """
-        记录事实观察（Reality层）
+        记录事实观察 — 创建Observation节点（Reality层）
 
-        Note: Observations belong to the Reality layer. They do NOT accept
-        session_uid or timestamp in props — MindGraph auto-sets created_at.
-        Use Journal nodes (Memory layer) for session-linked timestamped entries.
+        Uses add_node with node_type="Observation" (low-level CRUD).
         """
         return self._with_retry(
-            self._mg.capture,
-            action="observation",
+            self._mg.add_node,
             label=content[:100],
+            node_type="Observation",
             props={
                 "content": content,
                 "observation_type": observation_type,

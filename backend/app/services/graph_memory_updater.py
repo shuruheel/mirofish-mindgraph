@@ -405,7 +405,7 @@ class GraphMemoryUpdater:
         journals_sent = 0
         traces_sent = 0
 
-        # Collect links to create after all journals are written
+        # Collect links to create in batch after all journals are written
         pending_links = []  # [(from_uid, to_uid)]
 
         for activity in activities:
@@ -440,10 +440,6 @@ class GraphMemoryUpdater:
                     self._check_anomaly(activity, content)
                     # 高影响力决策记录
                     self._record_decision(activity, content)
-
-                    # Rate limit: pause briefly between journal writes
-                    import time as _time
-                    _time.sleep(0.2)
                 else:
                     # 社交决策记录（FOLLOW/MUTE）
                     if activity.action_type in self.SOCIAL_DECISION_ACTIONS:
@@ -455,19 +451,28 @@ class GraphMemoryUpdater:
                 logger.warning(f"结构化写入失败，降级为trace: {activity.agent_name} {activity.action_type}: {e}")
                 trace_texts.append(activity.to_episode_text())
 
-        # Create Agent → Journal links (after all journals are written)
-        for from_uid, to_uid in pending_links:
+        # Batch create Agent → Journal links (single API call)
+        if pending_links:
             try:
-                self.client.add_link(
-                    from_uid=from_uid,
-                    to_uid=to_uid,
-                    edge_type="AUTHORED",
-                    project_id=self.graph_id,
-                )
-                import time as _time
-                _time.sleep(0.1)
-            except Exception:
-                pass  # Non-critical
+                batch_edges = [
+                    {"from_uid": from_uid, "to_uid": to_uid, "edge_type": "AUTHORED"}
+                    for from_uid, to_uid in pending_links
+                ]
+                result = self.client.batch_create(edges=batch_edges)
+                errors = result.get("errors", [])
+                if errors:
+                    logger.debug(f"Batch link creation: {len(errors)} errors")
+            except Exception as e:
+                logger.debug(f"Batch link creation failed, falling back to individual: {e}")
+                # Fallback to individual link creation
+                for from_uid, to_uid in pending_links:
+                    try:
+                        self.client.add_link(
+                            from_uid=from_uid, to_uid=to_uid,
+                            edge_type="AUTHORED", project_id=self.graph_id,
+                        )
+                    except Exception:
+                        pass
 
         # 批量写入trace条目
         if trace_texts:

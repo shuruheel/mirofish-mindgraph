@@ -18,6 +18,7 @@ Caching layers:
 
 import json as _json
 import logging
+import os
 import time
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -255,16 +256,28 @@ class GraphContextProvider:
         logger.info(f"Round {round_num}: semantic retrieval started in background")
 
     def _do_round_retrieval(self, round_num: int, post_content: str):
-        """Execute the semantic retrieval (runs in background thread)."""
-        query = post_content[:500]  # Concise query for the embedding model
+        """Execute the semantic retrieval (runs in background thread).
 
+        Steps:
+        1. Summarize the feed posts into a concise topic query via LLM
+        2. Use the summary to query MindGraph's retrieve_context
+        """
+        # Step 1: Summarize the feed into a clean, concise query
+        query = self._summarize_feed(post_content)
+        if not query:
+            # Summarization failed — fall back to truncated raw content
+            query = post_content[:300]
+
+        logger.info(f"Round {round_num}: retrieval query: {query[:100]}...")
+
+        # Step 2: Retrieve from the knowledge graph
         try:
             if self._retrieval_client is None:
                 from mindgraph import MindGraph
                 self._retrieval_client = MindGraph(
                     self._client.base_url,
                     api_key=self._client.api_key,
-                    timeout=120.0,  # One call per round in a background thread — no rush
+                    timeout=120.0,  # One call per round in a background thread
                 )
 
             t0 = time.time()
@@ -288,6 +301,56 @@ class GraphContextProvider:
             self._round_semantic_block = ""
             self._round_semantic_round = round_num
             logger.warning(f"Round {round_num}: semantic retrieval failed: {e}")
+
+    @staticmethod
+    def _summarize_feed(post_content: str) -> str:
+        """
+        Summarize feed posts into a concise topic query for graph retrieval.
+
+        Uses the LLM (via OpenAI SDK) to distill the posts into 2-3 sentences
+        capturing the key topics, entities, and themes being discussed.
+        """
+        try:
+            from openai import OpenAI
+
+            api_key = os.environ.get("LLM_API_KEY", "")
+            base_url = os.environ.get("LLM_BASE_URL", "")
+            model = os.environ.get("LLM_MODEL_NAME", "")
+
+            if not api_key or not model:
+                logger.debug("LLM not configured, skipping feed summarization")
+                return ""
+
+            client = OpenAI(api_key=api_key, base_url=base_url or None)
+
+            # Truncate to avoid sending too much to the LLM
+            truncated = post_content[:2000]
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize the key topics discussed in these social media "
+                            "posts in 2-3 concise sentences in English. Focus on the "
+                            "main themes, entities, events, and geopolitical dynamics. "
+                            "This summary will be used as a search query."
+                        ),
+                    },
+                    {"role": "user", "content": truncated},
+                ],
+                max_tokens=150,
+                temperature=0.3,
+            )
+
+            summary = response.choices[0].message.content.strip()
+            logger.info(f"Feed summarized: {summary[:100]}...")
+            return summary
+
+        except Exception as e:
+            logger.warning(f"Feed summarization failed: {e}")
+            return ""
 
     def _wait_for_round_retrieval(self):
         """Block until the current round's retrieval is done (if any)."""

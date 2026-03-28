@@ -264,7 +264,7 @@ class GraphContextProvider:
                 self._retrieval_client = MindGraph(
                     self._client.base_url,
                     api_key=self._client.api_key,
-                    timeout=30.0,
+                    timeout=120.0,  # One call per round in a background thread — no rush
                 )
 
             t0 = time.time()
@@ -293,7 +293,7 @@ class GraphContextProvider:
         """Block until the current round's retrieval is done (if any)."""
         if self._round_retrieval_future is not None:
             try:
-                self._round_retrieval_future.result(timeout=35)
+                self._round_retrieval_future.result(timeout=125)
             except Exception:
                 pass
             self._round_retrieval_future = None

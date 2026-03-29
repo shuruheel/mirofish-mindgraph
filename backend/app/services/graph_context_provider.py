@@ -32,10 +32,8 @@ RELATIONSHIP_EDGE_TYPES = {
     "RelatedTo", "Supports", "About",
 }
 
-# Max tokens of context to inject per agent per round
-MAX_CONTEXT_TOKENS = 1500
-# Max characters (rough proxy for tokens — ~3 chars per token for mixed en/zh)
-MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * 3
+# Max characters of context to inject per agent per round (~2500 tokens)
+MAX_CONTEXT_CHARS = 10000
 
 # Background thread for round-level retrieval
 _retrieval_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-ctx")
@@ -86,6 +84,9 @@ class GraphContextProvider:
 
         # Per-agent round cache (semantic block + per-agent supplements)
         self._round_cache: Dict[str, str] = {}
+
+        # Summarized simulation requirement (used as round 0 retrieval query)
+        self._requirement_query: str = ""
 
         self._warmed = False
 
@@ -170,6 +171,9 @@ class GraphContextProvider:
         # 3. Load initial simulation nodes
         self.refresh_simulation_nodes()
 
+        # 4. Summarize simulation requirement for round 0 retrieval
+        self._requirement_query = self._summarize_requirement()
+
         elapsed = time.time() - t0
         self._warmed = True
         logger.info(
@@ -178,6 +182,7 @@ class GraphContextProvider:
             f"{sum(len(v) for v in self._entity_edges.values())} edges, "
             f"{len(self._relationship_map)} relationship entries, "
             f"{len(self._simulation_journals)} simulation journals"
+            + (f", round 0 query: '{self._requirement_query[:60]}'" if self._requirement_query else "")
         )
 
     def refresh_simulation_nodes(self):
@@ -244,6 +249,13 @@ class GraphContextProvider:
 
         post_content = self._extract_post_content(observation_text)
         if not post_content:
+            if self._requirement_query:
+                # Round 0: no posts yet — use the simulation requirement query
+                self._round_retrieval_future = _retrieval_executor.submit(
+                    self._do_round_retrieval, round_num, None, self._requirement_query
+                )
+                logger.info(f"Round {round_num}: retrieval from simulation requirement")
+                return
             self._round_semantic_block = ""
             self._round_semantic_round = round_num
             logger.info(f"Round {round_num}: no posts found, skipping retrieval")
@@ -255,22 +267,30 @@ class GraphContextProvider:
         )
         logger.info(f"Round {round_num}: semantic retrieval started in background")
 
-    def _do_round_retrieval(self, round_num: int, post_content: str):
+    def _do_round_retrieval(
+        self, round_num: int, post_content: Optional[str],
+        pre_query: str = "",
+    ):
         """Execute the semantic retrieval (runs in background thread).
 
         Steps:
-        1. Summarize the feed posts into a concise topic query via LLM
-        2. Use the summary to query MindGraph's retrieve_context
+        1. Use pre_query if given, otherwise summarize posts into keywords
+        2. Query MindGraph retrieve_context (epistemic layer only)
         """
-        # Step 1: Summarize the feed into a clean, concise query
-        query = self._summarize_feed(post_content)
-        if not query:
-            # Summarization failed — fall back to truncated raw content
-            query = post_content[:300]
+        # Step 1: Get the query
+        if pre_query:
+            query = pre_query
+        else:
+            query = self._summarize_feed(post_content)
+            if not query:
+                self._round_semantic_block = ""
+                self._round_semantic_round = round_num
+                logger.warning(f"Round {round_num}: skipping retrieval (summarization failed)")
+                return
 
         logger.info(f"Round {round_num}: retrieval query: {query[:100]}...")
 
-        # Step 2: Retrieve from the knowledge graph
+        # Step 2: Retrieve from the knowledge graph (epistemic layer)
         try:
             if self._retrieval_client is None:
                 from mindgraph import MindGraph
@@ -283,9 +303,9 @@ class GraphContextProvider:
             t0 = time.time()
             result = self._retrieval_client.retrieve_context(
                 query=query,
-                k=3,
+                k=5,
                 depth=1,
-                include_chunks=True,
+                layer="epistemic",
             )
             elapsed = time.time() - t0
 
@@ -302,9 +322,38 @@ class GraphContextProvider:
             self._round_semantic_round = round_num
             logger.warning(f"Round {round_num}: semantic retrieval failed: {e}")
 
-    # Cached OpenAI client for feed summarization (created once, reused)
+    # Cached OpenAI clients for feed summarization (created once, reused)
     _llm_client = None
     _llm_model = ""
+    _fallback_llm_model = ""  # Non-reasoning model for keyword extraction
+
+    _SUMMARIZE_SYSTEM_PROMPT = (
+        "Extract 5-8 key topic words IN ENGLISH from the posts below. "
+        "Translate non-English terms to English. "
+        "Output ONLY the keywords separated by spaces. "
+        "No sentences, no punctuation, no explanation. "
+        "Example output: Kissinger China diplomacy nuclear proliferation"
+    )
+
+    def _summarize_requirement(self) -> str:
+        """Summarize the simulation requirement into an English keyword query.
+
+        Called once during warm_cache. The result is used for round 0 retrieval
+        (before any agent posts exist).
+        """
+        if not self._sim_dir:
+            return ""
+        config_path = os.path.join(self._sim_dir, "simulation_config.json")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = _json.load(f)
+            requirement = config.get("simulation_requirement", "") or config.get("requirement", "")
+            if not requirement:
+                return ""
+            return self._summarize_feed(requirement)
+        except Exception as e:
+            logger.debug(f"Failed to summarize requirement: {e}")
+            return ""
 
     @classmethod
     def _get_llm_client(cls):
@@ -315,6 +364,7 @@ class GraphContextProvider:
             api_key = os.environ.get("LLM_API_KEY", "")
             base_url = os.environ.get("LLM_BASE_URL", "")
             cls._llm_model = os.environ.get("LLM_MODEL_NAME", "")
+            cls._fallback_llm_model = os.environ.get("LLM_SUMMARIZER_MODEL", "")
 
             if not api_key or not cls._llm_model:
                 return None, ""
@@ -325,45 +375,81 @@ class GraphContextProvider:
     @classmethod
     def _summarize_feed(cls, post_content: str) -> str:
         """
-        Summarize feed posts into a concise topic query for graph retrieval.
+        Summarize feed posts into a concise English keyword query for graph retrieval.
 
-        Uses the LLM (via OpenAI SDK) to distill the posts into key terms.
-        The OpenAI client is cached and reused across rounds.
+        Tries the primary model with reasoning disabled (effort=none) first.
+        If it returns empty content (reasoning model ignores the flag), retries
+        with LLM_SUMMARIZER_MODEL — a non-reasoning model for reliable extraction.
         """
+        client, model = cls._get_llm_client()
+        if not client:
+            logger.debug("LLM not configured, skipping feed summarization")
+            return ""
+
+        truncated = post_content[:2000]
+        messages = [
+            {"role": "system", "content": cls._SUMMARIZE_SYSTEM_PROMPT},
+            {"role": "user", "content": truncated},
+        ]
+
+        # Try primary model with reasoning disabled
+        summary = cls._call_summarize(
+            client, model, messages, reasoning_effort="none"
+        )
+        if summary:
+            return summary
+
+        # Primary model failed — try fallback non-reasoning model
+        if cls._fallback_llm_model and cls._fallback_llm_model != model:
+            logger.info(
+                f"Primary model returned empty, retrying with fallback: "
+                f"{cls._fallback_llm_model}"
+            )
+            summary = cls._call_summarize(
+                client, cls._fallback_llm_model, messages
+            )
+            if summary:
+                return summary
+
+        return ""
+
+    @classmethod
+    def _call_summarize(
+        cls, client, model: str, messages: list,
+        reasoning_effort: str = "",
+    ) -> str:
+        """Call the LLM for keyword extraction. Returns cleaned keywords or ''."""
+        import re
+
         try:
-            client, model = cls._get_llm_client()
-            if not client:
-                logger.debug("LLM not configured, skipping feed summarization")
-                return ""
-
-            # Truncate to avoid sending too much to the LLM
-            truncated = post_content[:2000]
-
-            response = client.chat.completions.create(
+            kwargs = dict(
                 model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Extract the key topics from these posts as a short "
-                            "search query (under 10 words). List the main entities, "
-                            "events, or themes separated by spaces. No sentences, "
-                            "just key terms. Example: 'Kissinger China diplomacy "
-                            "nuclear proliferation trade policy'"
-                        ),
-                    },
-                    {"role": "user", "content": truncated},
-                ],
-                max_tokens=50,
+                messages=messages,
+                max_tokens=800,
                 temperature=0.0,
             )
+            # Ask OpenRouter to disable reasoning for thinking models
+            if reasoning_effort:
+                kwargs["extra_body"] = {
+                    "reasoning": {"effort": reasoning_effort}
+                }
 
-            summary = response.choices[0].message.content.strip()
-            logger.info(f"Feed summarized: {summary[:100]}...")
+            response = client.chat.completions.create(**kwargs)
+
+            raw = response.choices[0].message.content
+            if not raw:
+                logger.warning(f"Summarization ({model}): empty content")
+                return ""
+            # Strip <think>...</think> tags from reasoning models
+            summary = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+            if not summary:
+                logger.warning(f"Summarization ({model}): all content inside <think> tags")
+                return ""
+            logger.info(f"Feed summarized ({model}): {summary[:100]}...")
             return summary
 
         except Exception as e:
-            logger.warning(f"Feed summarization failed: {e}")
+            logger.warning(f"Summarization ({model}) failed: {e}")
             return ""
 
     def _wait_for_round_retrieval(self):
@@ -513,46 +599,125 @@ class GraphContextProvider:
 
         return "\n".join(lines)
 
+    # Node types to skip — too generic, no analytical value
+    _SKIP_NODE_TYPES = {"Entity", "Concept", "Chunk"}
+
     @staticmethod
     def _format_retrieval_result(result: Dict[str, Any], char_budget: int) -> str:
-        """Format retrieve_context response into a text block."""
+        """Format retrieve_context response into a text block.
+
+        Priority order:
+        1. Graph edges — connections between epistemic nodes (the graph structure)
+        2. Epistemic node details (Claims, Hypotheses, Observations, etc.)
+        3. Source chunks — raw book text, truncated on paragraph boundaries
+        """
         graph_data = result.get("graph", {})
         nodes = graph_data.get("nodes", [])
         edges = graph_data.get("edges", [])
         chunks = result.get("chunks", [])
 
-        knowledge_lines = []
-        seen = set()
+        # Build UID → node lookup for resolving edges
+        uid_map: Dict[str, Dict] = {}
+        for node in nodes:
+            uid = node.get("uid", "")
+            if uid:
+                uid_map[uid] = node
 
-        for edge in edges:
-            label = edge.get("label", "")
-            if label and label not in seen:
-                knowledge_lines.append(f"- {label[:200]}")
+        seen = set()
+        block = "## Relevant knowledge\n"
+
+        # 1. Edges — render as "NodeA -[EDGE_TYPE]-> NodeB"
+        if edges:
+            block += "### Connections\n"
+            for edge in edges:
+                edge_type = edge.get("edge_type", "")
+                if edge_type == "EXTRACTED_FROM":
+                    continue  # Provenance edges aren't useful context
+                from_node = uid_map.get(edge.get("from_uid", ""), {})
+                to_node = uid_map.get(edge.get("to_uid", ""), {})
+                from_label = from_node.get("label", "?")
+                to_label = to_node.get("label", "?")
+                if from_label == "?" and to_label == "?":
+                    continue
+                line = f"- {from_label} -[{edge_type}]-> {to_label}\n"
+                if line in seen or len(block) + len(line) > char_budget:
+                    continue
+                block += line
+                seen.add(line)
+
+        # 2. Epistemic nodes with all properties (dynamic)
+        epistemic_nodes = [
+            n for n in nodes
+            if n.get("node_type", "") not in GraphContextProvider._SKIP_NODE_TYPES
+        ]
+        # Props to skip — metadata, not useful as context
+        _SKIP_PROPS = {
+            "name", "canonical_name", "session_uid", "timestamp",
+            "identifiers", "attributes", "entity_type",
+        }
+        if epistemic_nodes:
+            block += "### Knowledge\n"
+            for node in epistemic_nodes:
+                node_type = node.get("node_type", "")
+                label = node.get("label", "")
+                props = node.get("props", {}) if isinstance(node.get("props"), dict) else {}
+
+                # Use label as the dedup key
+                if label in seen:
+                    continue
+
+                parts = [f"[{node_type}] {label}"]
+
+                # Append all meaningful properties dynamically
+                for key, val in props.items():
+                    if key in _SKIP_PROPS or val is None:
+                        continue
+                    if isinstance(val, str) and val:
+                        parts.append(f"  {key}: {val[:300]}")
+                    elif isinstance(val, list) and val:
+                        parts.append(f"  {key}: {'; '.join(str(v) for v in val[:5])}")
+                    elif isinstance(val, (int, float, bool)):
+                        parts.append(f"  {key}: {val}")
+
+                # Add top-level confidence
+                confidence = node.get("confidence")
+                if confidence and isinstance(confidence, (int, float)):
+                    parts.append(f"  confidence: {confidence}")
+
+                line = "\n".join(parts) + "\n"
+                if len(block) + len(line) > char_budget:
+                    continue
+                block += f"- {line}"
                 seen.add(label)
 
-        for node in nodes:
-            summary = node.get("summary", "") or node.get("label", "")
-            node_type = node.get("node_type", "")
-            if summary and summary not in seen:
-                prefix = f"[{node_type}] " if node_type else ""
-                knowledge_lines.append(f"- {prefix}{summary[:200]}")
-                seen.add(summary)
-
-        for chunk in chunks:
-            content = chunk.get("content", "") or chunk.get("text", "")
-            if content and content[:80] not in seen:
-                knowledge_lines.append(f"- [Source] {content[:250]}")
+        # 3. Source chunks — truncate on paragraph boundaries
+        remaining = char_budget - len(block)
+        if remaining > 300 and chunks:
+            block += "### Source excerpts\n"
+            per_chunk = max(300, remaining // len(chunks))
+            for chunk in chunks:
+                content = chunk.get("content", "") or chunk.get("text", "")
+                if not content or content[:80] in seen:
+                    continue
+                # Truncate at paragraph boundary
+                truncated = content[:per_chunk]
+                last_para = truncated.rfind("\n\n")
+                if last_para > len(truncated) // 2:
+                    truncated = truncated[:last_para]
+                title = chunk.get("document_title", "")
+                header = f"[{title}] " if title else ""
+                line = f"- {header}{truncated}\n"
+                if len(block) + len(line) > char_budget:
+                    space_left = char_budget - len(block) - len(header) - 4
+                    if space_left > 200:
+                        truncated = content[:space_left]
+                        last_para = truncated.rfind("\n\n")
+                        if last_para > len(truncated) // 2:
+                            truncated = truncated[:last_para]
+                        block += f"- {header}{truncated}\n"
+                    break
+                block += line
                 seen.add(content[:80])
-
-        if not knowledge_lines:
-            return ""
-
-        block = "## Relevant knowledge\n"
-        for line in knowledge_lines:
-            candidate = block + line + "\n"
-            if len(candidate) > char_budget:
-                break
-            block = candidate
 
         return block.rstrip()
 

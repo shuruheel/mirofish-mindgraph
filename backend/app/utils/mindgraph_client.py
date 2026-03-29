@@ -41,7 +41,7 @@ class MindGraphClient:
         self.base_url = (base_url or Config.MINDGRAPH_BASE_URL).rstrip('/')
         if not self.api_key:
             raise ValueError("MINDGRAPH_API_KEY not configured")
-        self._mg = MindGraph(self.base_url, api_key=self.api_key, timeout=60.0)
+        self._mg = MindGraph(self.base_url, api_key=self.api_key, timeout=120.0)
         self._semaphore = threading.Semaphore(self.MAX_CONCURRENT_CALLS)
         logger.info(f"MindGraphClient initialized: base_url={self.base_url}")
 

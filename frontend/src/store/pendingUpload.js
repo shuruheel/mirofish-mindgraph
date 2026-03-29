@@ -1,6 +1,6 @@
 /**
- * 临时存储待上传的文件和需求
- * 用于首页点击启动引擎后立即跳转，在Process页面再进行API调用
+ * Temporary storage for pending file uploads and requirements
+ * Used to redirect immediately after clicking "Launch Engine" on the Home page, then make API calls on the Process page
  */
 import { reactive } from 'vue'
 
@@ -8,7 +8,7 @@ const state = reactive({
   files: [],
   simulationRequirement: '',
   isPending: false,
-  connectMode: false  // true = 连接已有MindGraph图谱，跳过文档上传
+  connectMode: false  // true = connect to existing MindGraph graph, skip document upload
 })
 
 export function setPendingUpload(files, requirement) {

@@ -15,7 +15,7 @@
             :class="{ active: viewMode === mode }"
             @click="viewMode = mode"
           >
-            {{ { graph: '图谱', split: '双栏', workbench: '工作台' }[mode] }}
+            {{ { graph: 'Graph', split: 'Split View', workbench: 'Workspace' }[mode] }}
           </button>
         </div>
       </div>
@@ -48,7 +48,7 @@
 
       <!-- Right Panel: Step Components -->
       <div class="panel-wrapper right" :style="rightPanelStyle">
-        <!-- Step 1: 图谱构建 -->
+        <!-- Step 1: Graph Build -->
         <Step1GraphBuild 
           v-if="currentStep === 1"
           :currentPhase="currentPhase"
@@ -59,7 +59,7 @@
           :systemLogs="systemLogs"
           @next-step="handleNextStep"
         />
-        <!-- Step 2: 环境搭建 -->
+        <!-- Step 2: Environment Setup -->
         <Step2EnvSetup
           v-else-if="currentStep === 2"
           :simulationId="currentSimulationId"
@@ -85,8 +85,8 @@ import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData }
 import { createSimulation, listSimulations } from '../api/simulation'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 
-// 项目数据来源
-const projectSource = ref('upload') // 'upload' 或 'mindgraph'
+// Project data source
+const projectSource = ref('upload') // 'upload' or 'mindgraph'
 const currentSimulationId = ref(null)
 
 const route = useRoute()
@@ -96,8 +96,8 @@ const router = useRouter()
 const viewMode = ref('split') // graph | split | workbench
 
 // Step State
-const currentStep = ref(1) // 1: 图谱构建, 2: 环境搭建, 3: 开始模拟, 4: 报告生成, 5: 深度互动
-const stepNames = ['图谱构建', '环境搭建', '开始模拟', '报告生成', '深度互动']
+const currentStep = ref(1) // 1: Graph Build, 2: Environment Setup, 3: Run Simulation, 4: Report Generation, 5: Deep Interaction
+const stepNames = ['Graph Build', 'Environment Setup', 'Run Simulation', 'Report Generation', 'Deep Interaction']
 
 // Data State
 const currentProjectId = ref(route.params.projectId)
@@ -166,7 +166,7 @@ const handleNextStep = async (params = {}) => {
   if (currentStep.value < 5) {
     const nextStep = currentStep.value + 1
 
-    // 进入 Step 2 时查找或创建模拟实例
+    // Find or create simulation instance when entering Step 2
     if (nextStep === 2 && !currentSimulationId.value && projectData.value) {
       await findOrCreateSimulation(projectData.value.project_id, projectData.value.graph_id)
       if (!currentSimulationId.value) return
@@ -186,14 +186,14 @@ const handleNextStep = async (params = {}) => {
     }
 
     currentStep.value = nextStep
-    addLog(`进入 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
+    addLog(`Entering Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
   }
 }
 
 const handleGoBack = () => {
   if (currentStep.value > 1) {
     currentStep.value--
-    addLog(`返回 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
+    addLog(`Returning to Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
   }
 }
 
@@ -219,29 +219,29 @@ const findOrCreateSimulation = async (projectId, graphId) => {
       )
       if (existing) {
         currentSimulationId.value = existing.simulation_id
-        addLog(`已找到现有模拟实例: ${existing.simulation_id} (${existing.status})`)
+        addLog(`Found existing simulation instance: ${existing.simulation_id} (${existing.status})`)
         return
       }
     }
   } catch (err) {
-    addLog(`查询现有模拟失败，将创建新实例: ${err.message}`)
+    addLog(`Failed to query existing simulation, will create new instance: ${err.message}`)
   }
 
   // No existing simulation found — create a new one
   try {
-    addLog('创建模拟实例...')
+    addLog('Creating simulation instance...')
     const res = await createSimulation({
       project_id: projectId,
       graph_id: graphId
     })
     if (res.success) {
       currentSimulationId.value = res.data.simulation_id
-      addLog(`模拟实例已创建: ${res.data.simulation_id}`)
+      addLog(`Simulation instance created: ${res.data.simulation_id}`)
     } else {
-      addLog(`创建模拟实例失败: ${res.error}`)
+      addLog(`Failed to create simulation instance: ${res.error}`)
     }
   } catch (err) {
-    addLog(`创建模拟实例异常: ${err.message}`)
+    addLog(`Exception creating simulation instance: ${err.message}`)
   }
 }
 
@@ -294,17 +294,17 @@ const loadProject = async () => {
       projectData.value = res.data
       projectSource.value = res.data.source || 'upload'
 
-      // MindGraph连接模式：跳过Step 1，直接进入Step 2
+      // MindGraph connection mode: skip Step 1, go directly to Step 2
       if (projectSource.value === 'mindgraph') {
         currentPhase.value = 2
         addLog(`MindGraph connection loaded. Skipping graph build.`)
 
-        // 查找已有模拟实例（支持页面刷新后重连）
+        // Find existing simulation instance (supports reconnection after page refresh)
         await findOrCreateSimulation(res.data.project_id, res.data.graph_id)
 
         currentStep.value = 2
 
-        // 加载已有图谱数据用于可视化
+        // Load existing graph data for visualization
         if (res.data.graph_id) {
           await loadGraph(res.data.graph_id)
         }

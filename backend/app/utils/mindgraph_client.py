@@ -1,11 +1,11 @@
 """
-MindGraph客户端封装
-基于 mindgraph-sdk 的统一访问层，带项目级命名空间隔离和重试机制
+MindGraph client wrapper
+Unified access layer based on mindgraph-sdk with project-level namespace isolation and retry mechanism
 
-MindGraph没有per-graph隔离（一个API Key = 一个组织级图谱），
-因此通过agent_id实现项目级命名空间：
-- 写入时：所有请求携带 agent_id=project_id
-- 读取时：通过 get_agent_nodes(agent_id) 过滤
+MindGraph has no per-graph isolation (one API Key = one organization-level graph),
+so namespace isolation is achieved via agent_id:
+- Write: all requests carry agent_id=project_id
+- Read: filter via get_agent_nodes(agent_id)
 """
 
 import threading
@@ -23,30 +23,30 @@ logger = get_logger('mirofish.mindgraph_client')
 
 class MindGraphClient:
     """
-    MindGraph REST API 客户端（基于 mindgraph-sdk）
+    MindGraph REST API client (based on mindgraph-sdk)
 
-    核心职责：
-    1. 封装 mindgraph-sdk 并添加重试机制
-    2. agent_id命名空间隔离
-    3. 高层便捷方法（Agent发言摄入、决策记录等）
-    4. 并发控制 — 限制同时进行的API调用数量，避免服务器过载
+    Core responsibilities:
+    1. Wrap mindgraph-sdk with retry mechanism
+    2. agent_id namespace isolation
+    3. High-level convenience methods (agent post ingestion, decision recording, etc.)
+    4. Concurrency control - limit concurrent API calls to avoid server overload
     """
 
     MAX_RETRIES = 3
-    RETRY_DELAY = 2.0  # 秒，指数退避
-    MAX_CONCURRENT_CALLS = 5  # 最多同时进行的API调用
+    RETRY_DELAY = 2.0  # seconds, exponential backoff
+    MAX_CONCURRENT_CALLS = 5  # max concurrent API calls
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.api_key = api_key or Config.MINDGRAPH_API_KEY
         self.base_url = (base_url or Config.MINDGRAPH_BASE_URL).rstrip('/')
         if not self.api_key:
-            raise ValueError("MINDGRAPH_API_KEY 未配置")
+            raise ValueError("MINDGRAPH_API_KEY not configured")
         self._mg = MindGraph(self.base_url, api_key=self.api_key, timeout=60.0)
         self._semaphore = threading.Semaphore(self.MAX_CONCURRENT_CALLS)
-        logger.info(f"MindGraphClient 初始化完成: base_url={self.base_url}")
+        logger.info(f"MindGraphClient initialized: base_url={self.base_url}")
 
     def close(self):
-        """关闭底层httpx连接池"""
+        """Close underlying httpx connection pool"""
         self._mg.close()
 
     def __enter__(self):
@@ -56,11 +56,11 @@ class MindGraphClient:
         self.close()
 
     # ═══════════════════════════════════════
-    # 重试封装
+    # Retry wrapper
     # ═══════════════════════════════════════
 
     def _with_retry(self, func, *args, operation_name: str = "API call", **kwargs) -> Any:
-        """带指数退避重试和并发控制的调用封装"""
+        """Call wrapper with exponential backoff retry and concurrency control"""
         self._semaphore.acquire()
         try:
             return self._with_retry_inner(func, *args, operation_name=operation_name, **kwargs)
@@ -68,7 +68,7 @@ class MindGraphClient:
             self._semaphore.release()
 
     def _with_retry_inner(self, func, *args, operation_name: str = "API call", **kwargs) -> Any:
-        """带指数退避重试的调用封装（内部方法，不加锁）"""
+        """Call wrapper with exponential backoff retry (internal method, no locking)"""
         delay = self.RETRY_DELAY
         last_exception = None
 
@@ -77,44 +77,44 @@ class MindGraphClient:
                 return func(*args, **kwargs)
             except MindGraphError as e:
                 last_exception = e
-                # 不重试客户端错误(4xx)，除了429
+                # Don't retry client errors (4xx), except 429
                 if 400 <= e.status < 500 and e.status != 429:
-                    logger.error(f"MindGraph {operation_name} 客户端错误 ({e.status}): {e}")
+                    logger.error(f"MindGraph {operation_name} client error ({e.status}): {e}")
                     raise
                 if attempt < self.MAX_RETRIES - 1:
                     logger.warning(
-                        f"MindGraph {operation_name} 第 {attempt + 1} 次失败 ({e.status}): "
-                        f"{str(e)[:100]}, {delay:.1f}秒后重试..."
+                        f"MindGraph {operation_name} attempt {attempt + 1} failed ({e.status}): "
+                        f"{str(e)[:100]}, retrying in {delay:.1f}s..."
                     )
                     time.sleep(delay)
                     delay *= 2
                 else:
-                    logger.error(f"MindGraph {operation_name} 在 {self.MAX_RETRIES} 次尝试后仍失败: {e}")
+                    logger.error(f"MindGraph {operation_name} still failed after {self.MAX_RETRIES} attempts: {e}")
             except (httpx.HTTPError, ConnectionError, TimeoutError, OSError) as e:
                 last_exception = e
                 if attempt < self.MAX_RETRIES - 1:
                     logger.warning(
-                        f"MindGraph {operation_name} 第 {attempt + 1} 次连接失败: "
-                        f"{str(e)[:100]}, {delay:.1f}秒后重试..."
+                        f"MindGraph {operation_name} connection attempt {attempt + 1} failed: "
+                        f"{str(e)[:100]}, retrying in {delay:.1f}s..."
                     )
                     time.sleep(delay)
                     delay *= 2
                 else:
-                    logger.error(f"MindGraph {operation_name} 在 {self.MAX_RETRIES} 次尝试后仍失败: {e}")
+                    logger.error(f"MindGraph {operation_name} still failed after {self.MAX_RETRIES} attempts: {e}")
 
         raise last_exception
 
     # ═══════════════════════════════════════
-    # 文档摄入
+    # Document ingestion
     # ═══════════════════════════════════════
 
     def ingest_document(self, text: str, project_id: str, source_name: str = "",
                         layers: Optional[List[str]] = None) -> str:
         """
-        异步文档摄入（自动分块、实体/关系提取）
+        Async document ingestion (auto-chunking, entity/relation extraction)
 
         Returns:
-            job_id: 异步任务ID
+            job_id: Async task ID
         """
         result = self._with_retry(
             self._mg.ingest_document,
@@ -122,10 +122,10 @@ class MindGraphClient:
             agent_id=project_id,
             title=source_name or None,
             layers=layers,
-            operation_name=f"文档摄入(project={project_id})",
+            operation_name=f"document ingestion(project={project_id})",
         )
         job_id = result.get("job_id", "")
-        logger.info(f"文档摄入任务已提交: job_id={job_id}, project={project_id}")
+        logger.info(f"Document ingestion task submitted: job_id={job_id}, project={project_id}")
         return job_id
 
     def ingest_chunk(self, text: str, project_id: str,
@@ -133,7 +133,7 @@ class MindGraphClient:
                      label: Optional[str] = None,
                      chunk_type: Optional[str] = None) -> Dict[str, Any]:
         """
-        同步文本块摄入（<8000字符，立即返回提取结果）
+        Synchronous chunk ingestion (<8000 chars, returns extraction result immediately)
         """
         result = self._with_retry(
             self._mg.ingest_chunk,
@@ -142,102 +142,102 @@ class MindGraphClient:
             layers=layers,
             label=label,
             chunk_type=chunk_type,
-            operation_name=f"文本块摄入(project={project_id})",
+            operation_name=f"chunk ingestion(project={project_id})",
         )
-        logger.debug(f"文本块摄入完成: project={project_id}, text_len={len(text)}")
+        logger.debug(f"Chunk ingestion complete: project={project_id}, text_len={len(text)}")
         return result
 
     def poll_job(self, job_id: str, timeout: int = 600, poll_interval: float = 3.0) -> Dict[str, Any]:
-        """轮询异步摄入任务状态"""
+        """Poll async ingestion task status"""
         start_time = time.time()
 
         while time.time() - start_time < timeout:
             result = self._with_retry(
                 self._mg.get_job, job_id,
-                operation_name=f"轮询任务({job_id[:12]})",
+                operation_name=f"poll job({job_id[:12]})",
             )
             status = result.get("status", "")
 
             if status == "completed":
-                logger.info(f"摄入任务完成: job_id={job_id}")
+                logger.info(f"Ingestion task completed: job_id={job_id}")
                 return result
             elif status == "failed":
-                error = result.get("error", "未知错误")
-                logger.error(f"摄入任务失败: job_id={job_id}, error={error}")
-                raise RuntimeError(f"MindGraph摄入任务失败: {error}")
+                error = result.get("error", "unknown error")
+                logger.error(f"Ingestion task failed: job_id={job_id}, error={error}")
+                raise RuntimeError(f"MindGraph ingestion task failed: {error}")
             elif status == "cancelled":
-                raise RuntimeError(f"MindGraph摄入任务已取消: {job_id}")
+                raise RuntimeError(f"MindGraph ingestion task cancelled: {job_id}")
 
             elapsed = int(time.time() - start_time)
             progress = result.get("progress", {})
-            logger.debug(f"摄入任务进行中: job_id={job_id}, status={status}, elapsed={elapsed}s, progress={progress}")
+            logger.debug(f"Ingestion task in progress: job_id={job_id}, status={status}, elapsed={elapsed}s, progress={progress}")
             time.sleep(poll_interval)
 
-        raise TimeoutError(f"等待MindGraph摄入任务超时({timeout}秒): job_id={job_id}")
+        raise TimeoutError(f"Timed out waiting for MindGraph ingestion task ({timeout}s): job_id={job_id}")
 
     def get_job(self, job_id: str) -> Dict[str, Any]:
-        """获取任务状态（不轮询）"""
+        """Get task status (no polling)"""
         return self._with_retry(
             self._mg.get_job, job_id,
-            operation_name=f"检查任务({job_id[:12]})",
+            operation_name=f"check job({job_id[:12]})",
         )
 
     # ═══════════════════════════════════════
-    # 搜索与检索
+    # Search and retrieval
     # ═══════════════════════════════════════
 
     def search_hybrid(self, query: str, project_id: str, limit: int = 10) -> Dict[str, Any]:
         """
-        混合搜索（BM25 + 语义向量 + RRF融合）
+        Hybrid search (BM25 + semantic vector + RRF fusion)
 
         Returns:
             {"results": [...]}
         """
-        # SDK的hybrid_search不支持agent_id，使用retrieve直接传递
+        # SDK's hybrid_search doesn't support agent_id, use retrieve to pass directly
         results = self._with_retry(
             self._mg.retrieve,
             action="hybrid",
             query=query,
             limit=limit,
             agent_id=project_id,
-            operation_name=f"混合搜索(query={query[:30]}...)",
+            operation_name=f"hybrid search(query={query[:30]}...)",
         )
-        # SDK返回list，标准化为dict
+        # SDK returns list, normalize to dict
         if isinstance(results, list):
             results = {"results": results}
-        logger.info(f"搜索完成: 找到 {len(results.get('results', []))} 条结果")
+        logger.info(f"Search complete: found {len(results.get('results', []))} results")
         return results
 
     def search_text(self, query: str, project_id: str, limit: int = 10) -> Dict[str, Any]:
-        """全文搜索（BM25）"""
+        """Full-text search (BM25)"""
         results = self._with_retry(
             self._mg.retrieve,
             action="text",
             query=query,
             limit=limit,
             agent_id=project_id,
-            operation_name=f"全文搜索(query={query[:30]}...)",
+            operation_name=f"text search(query={query[:30]}...)",
         )
         if isinstance(results, list):
             results = {"results": results}
         return results
 
     def search_semantic(self, query: str, project_id: str, limit: int = 10) -> Dict[str, Any]:
-        """语义搜索 — 降级为hybrid（semantic需要embedding配置）"""
+        """Semantic search - degrades to hybrid (semantic requires embedding config)"""
         return self.search_hybrid(query, project_id, limit)
 
     def retrieve_context(self, query: str, project_id: Optional[str] = None,
                          k: int = 5, depth: int = 1,
                          include_chunks: Optional[bool] = None) -> Dict[str, Any]:
         """
-        图谱增强RAG检索
+        Graph-augmented RAG retrieval
 
-        SDK v0.1.4+ 提供原生 retrieve_context() 方法，搜索整个图谱。
-        当 project_id 指定时，通过 _request 传入 agent_id 进行命名空间过滤。
-        当 project_id 为 None 时，使用 SDK 原生方法搜索全量图谱。
+        SDK v0.1.4+ provides native retrieve_context() method that searches the entire graph.
+        When project_id is specified, agent_id is passed via _request for namespace filtering.
+        When project_id is None, uses SDK native method to search the full graph.
         """
         if project_id:
-            # 带agent_id命名空间过滤
+            # With agent_id namespace filtering
             body: Dict[str, Any] = {
                 "query": query,
                 "k": k,
@@ -248,33 +248,33 @@ class MindGraphClient:
                 body["include_chunks"] = include_chunks
             return self._with_retry(
                 self._mg._request, "POST", "/retrieve/context", body,
-                operation_name=f"RAG检索(query={query[:30]}..., k={k})",
+                operation_name=f"RAG retrieval(query={query[:30]}..., k={k})",
             )
         else:
-            # 搜索整个图谱（MindGraph连接模式）
+            # Search entire graph (MindGraph connection mode)
             kwargs: Dict[str, Any] = {"query": query, "k": k, "depth": depth}
             if include_chunks is not None:
                 kwargs["include_chunks"] = include_chunks
             return self._with_retry(
                 self._mg.retrieve_context,
                 **kwargs,
-                operation_name=f"RAG全局检索(query={query[:30]}..., k={k})",
+                operation_name=f"RAG global retrieval(query={query[:30]}..., k={k})",
             )
 
     # ═══════════════════════════════════════
-    # 认知查询
+    # Cognitive queries
     # ═══════════════════════════════════════
 
     def get_weak_claims(self, project_id: str, limit: int = 20) -> Dict[str, Any]:
         """
-        获取低置信度声明
+        Get low-confidence claims
 
-        使用SDK的dedicated GET /claims/weak 端点。
-        注意：该端点不支持agent_id过滤，返回全局结果。
+        Uses SDK's dedicated GET /claims/weak endpoint.
+        Note: this endpoint does not support agent_id filtering, returns global results.
         """
         results = self._with_retry(
             self._mg.get_weak_claims,
-            operation_name="获取弱声明",
+            operation_name="get weak claims",
         )
         if isinstance(results, list):
             return {"results": results[:limit]}
@@ -282,14 +282,14 @@ class MindGraphClient:
 
     def get_contradictions(self, project_id: str, limit: int = 20) -> Dict[str, Any]:
         """
-        获取未解决的矛盾
+        Get unresolved contradictions
 
-        使用SDK的dedicated GET /contradictions 端点。
-        注意：该端点不支持agent_id过滤，返回全局结果。
+        Uses SDK's dedicated GET /contradictions endpoint.
+        Note: this endpoint does not support agent_id filtering, returns global results.
         """
         results = self._with_retry(
             self._mg.get_contradictions,
-            operation_name="获取矛盾",
+            operation_name="get contradictions",
         )
         if isinstance(results, list):
             return {"results": results[:limit]}
@@ -297,21 +297,21 @@ class MindGraphClient:
 
     def get_open_questions(self, project_id: str, limit: int = 20) -> Dict[str, Any]:
         """
-        获取开放问题
+        Get open questions
 
-        使用SDK的dedicated GET /questions 端点。
-        注意：该端点不支持agent_id过滤，返回全局结果。
+        Uses SDK's dedicated GET /questions endpoint.
+        Note: this endpoint does not support agent_id filtering, returns global results.
         """
         results = self._with_retry(
             self._mg.get_open_questions,
-            operation_name="获取开放问题",
+            operation_name="get open questions",
         )
         if isinstance(results, list):
             return {"results": results[:limit]}
         return results
 
     # ═══════════════════════════════════════
-    # 节点/边列表
+    # Node/edge listing
     # ═══════════════════════════════════════
 
     def list_nodes(
@@ -322,24 +322,24 @@ class MindGraphClient:
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """分页列出节点"""
+        """List nodes with pagination"""
         result = self._with_retry(
             self._mg.get_nodes,
             node_type=node_type,
             layer=layer,
             limit=limit,
             offset=offset,
-            operation_name=f"列出节点(project={project_id})",
+            operation_name=f"list nodes(project={project_id})",
         )
         return result.get("items", result) if isinstance(result, dict) else result
 
     def list_all_graph_nodes(self, node_type: Optional[str] = None,
                             layer: Optional[str] = None, max_items: int = 2000) -> List[Dict[str, Any]]:
         """
-        获取整个图谱的所有节点（不按agent_id过滤）
+        Get all nodes from the entire graph (no agent_id filtering)
 
-        用于连接已有MindGraph图谱的场景，读取用户通过MindGraph Cloud
-        构建的全量图谱数据。
+        Used for connecting to existing MindGraph graphs, reading full graph data
+        built by users through MindGraph Cloud.
         """
         all_nodes = []
         offset = 0
@@ -347,7 +347,7 @@ class MindGraphClient:
 
         while len(all_nodes) < max_items:
             batch = self.list_nodes(
-                project_id="__global__",  # 仅用于日志，不影响查询
+                project_id="__global__",  # For logging only, does not affect query
                 node_type=node_type,
                 layer=layer,
                 limit=page_size,
@@ -360,19 +360,19 @@ class MindGraphClient:
                 break
             offset += page_size
 
-        logger.info(f"全量图谱节点读取完成: 共 {len(all_nodes)} 个节点")
+        logger.info(f"Full graph node read complete: {len(all_nodes)} nodes total")
         return all_nodes[:max_items]
 
     def list_all_graph_edges(self, nodes: Optional[List[Dict[str, Any]]] = None,
                             max_items: int = 5000) -> List[Dict[str, Any]]:
         """
-        获取图谱的边（不按agent_id过滤）
+        Get graph edges (no agent_id filtering)
 
-        使用 POST /edges/batch 批量接口，一次请求获取所有节点间的边。
+        Uses POST /edges/batch bulk API to get all edges between nodes in a single request.
 
         Args:
-            nodes: 预先获取的节点列表（避免重复查询）
-            max_items: 最多返回多少条边
+            nodes: Pre-fetched node list (to avoid duplicate queries)
+            max_items: Maximum number of edges to return
         """
         if nodes is None:
             nodes = self.list_all_graph_nodes()
@@ -381,25 +381,25 @@ class MindGraphClient:
         if not node_uids:
             return []
 
-        logger.info(f"批量查询 {len(node_uids)} 个节点间的边...")
+        logger.info(f"Batch querying edges between {len(node_uids)} nodes...")
 
         try:
             edges = self._with_retry(
                 self._mg.get_edges_batch, node_uids,
-                operation_name=f"批量查询边({len(node_uids)}个节点)",
+                operation_name=f"batch query edges({len(node_uids)} nodes)",
             )
-            logger.info(f"全量图谱边读取完成: 共 {len(edges)} 条边")
+            logger.info(f"Full graph edge read complete: {len(edges)} edges total")
             return edges[:max_items]
         except Exception as e:
-            logger.warning(f"批量边查询失败，回退到逐节点查询: {e}")
-            # 回退：逐节点查询（限制数量避免超时）
+            logger.warning(f"Batch edge query failed, falling back to per-node query: {e}")
+            # Fallback: per-node query (limit count to avoid timeout)
             all_edges = []
             seen_uids = set()
             for node_uid in node_uids[:200]:
                 try:
                     node_edges = self._with_retry(
                         self._mg.get_edges, from_uid=node_uid,
-                        operation_name=f"列出边(from={node_uid[:12]})",
+                        operation_name=f"list edges(from={node_uid[:12]})",
                     )
                     for edge in node_edges:
                         edge_uid = edge.get("uid", "")
@@ -408,30 +408,30 @@ class MindGraphClient:
                             all_edges.append(edge)
                 except Exception:
                     pass
-            logger.info(f"回退边查询完成: 共 {len(all_edges)} 条边")
+            logger.info(f"Fallback edge query complete: {len(all_edges)} edges total")
             return all_edges[:max_items]
 
     def list_all_nodes(self, project_id: str, node_type: Optional[str] = None,
                        layer: Optional[str] = None, max_items: int = 2000) -> List[Dict[str, Any]]:
         """
-        获取项目的所有节点
+        Get all nodes for a project
 
-        优先使用 get_agent_nodes(agent_id) 进行命名空间过滤。
-        如果该端点不可用，回退到全量分页查询。
+        Prefers get_agent_nodes(agent_id) for namespace filtering.
+        Falls back to full paginated query if that endpoint is unavailable.
         """
         try:
             nodes = self._with_retry(
                 self._mg.get_agent_nodes, project_id,
-                operation_name=f"获取Agent节点(project={project_id})",
+                operation_name=f"get agent nodes(project={project_id})",
             )
-            # 按node_type过滤
+            # Filter by node_type
             if node_type:
                 nodes = [n for n in nodes if n.get("node_type") == node_type]
             return nodes[:max_items]
         except Exception as e:
-            logger.debug(f"get_agent_nodes失败，回退到分页查询: {e}")
+            logger.debug(f"get_agent_nodes failed, falling back to paginated query: {e}")
 
-        # 回退：全量分页
+        # Fallback: full pagination
         all_nodes = []
         offset = 0
         page_size = 100
@@ -455,10 +455,10 @@ class MindGraphClient:
 
     def list_all_edges(self, project_id: str) -> List[Dict[str, Any]]:
         """
-        获取项目所有边
+        Get all edges for a project
 
-        使用 POST /edges/batch 批量接口获取节点间的边。
-        回退到逐节点查询（如果批量接口不可用）。
+        Uses POST /edges/batch bulk API to get edges between nodes.
+        Falls back to per-node query if bulk API is unavailable.
         """
         nodes = self.list_all_nodes(project_id=project_id)
         node_uids = [n.get("uid", "") for n in nodes if n.get("uid")]
@@ -468,13 +468,13 @@ class MindGraphClient:
         try:
             edges = self._with_retry(
                 self._mg.get_edges_batch, node_uids,
-                operation_name=f"批量查询边({len(node_uids)}个节点, project={project_id})",
+                operation_name=f"batch query edges({len(node_uids)} nodes, project={project_id})",
             )
             return edges
         except Exception as e:
-            logger.debug(f"批量边查询失败，回退到逐节点查询: {e}")
+            logger.debug(f"Batch edge query failed, falling back to per-node query: {e}")
 
-        # 回退：逐节点查询
+        # Fallback: per-node query
         all_edges = []
         seen_uids = set()
 
@@ -485,7 +485,7 @@ class MindGraphClient:
             try:
                 edges = self._with_retry(
                     self._mg.get_edges, from_uid=node_uid,
-                    operation_name=f"列出边(from={node_uid[:12]})",
+                    operation_name=f"list edges(from={node_uid[:12]})",
                 )
                 for edge in edges:
                     edge_uid = edge.get("uid", "")
@@ -498,54 +498,54 @@ class MindGraphClient:
         return all_edges
 
     # ═══════════════════════════════════════
-    # 单节点操作
+    # Single node operations
     # ═══════════════════════════════════════
 
     def get_node(self, uid: str) -> Dict[str, Any]:
-        """获取单个节点详情"""
+        """Get single node details"""
         return self._with_retry(
             self._mg.get_node, uid,
-            operation_name=f"获取节点({uid[:12]})",
+            operation_name=f"get node({uid[:12]})",
         )
 
     def get_nodes_batch(self, uids: List[str]) -> List[Dict[str, Any]]:
-        """批量获取节点详情（单次API调用）"""
+        """Batch get node details (single API call)"""
         if not uids:
             return []
         return self._with_retry(
             self._mg.get_nodes_batch, uids,
-            operation_name=f"批量获取节点({len(uids)}个)",
+            operation_name=f"batch get nodes({len(uids)})",
         )
 
     def get_edges_batch(self, node_uids: List[str]) -> List[Dict[str, Any]]:
-        """批量获取节点间的边（单次API调用）"""
+        """Batch get edges between nodes (single API call)"""
         if not node_uids:
             return []
         return self._with_retry(
             self._mg.get_edges_batch, node_uids,
-            operation_name=f"批量查询边({len(node_uids)}个节点)",
+            operation_name=f"batch query edges({len(node_uids)} nodes)",
         )
 
     def get_neighborhood(self, uid: str, depth: int = 1) -> Dict[str, Any]:
         """
-        获取节点的邻居（BFS）
+        Get node neighbors (BFS)
 
-        SDK的neighborhood()返回traverse步骤列表（节点信息）。
-        边数据通过get_edges(from_uid)单独获取，合并为
-        {"nodes": [...], "edges": [...]} 格式。
+        SDK's neighborhood() returns traversal step list (node info).
+        Edge data is fetched separately via get_edges(from_uid) and merged into
+        {"nodes": [...], "edges": [...]} format.
         """
         result = self._with_retry(
             self._mg.neighborhood, uid, max_depth=depth,
-            operation_name=f"获取邻居({uid[:12]}, depth={depth})",
+            operation_name=f"get neighborhood({uid[:12]}, depth={depth})",
         )
         nodes = result if isinstance(result, list) else result.get("nodes", [])
 
-        # 获取该节点的出边和入边
+        # Get outgoing and incoming edges for this node
         edges = []
         try:
             out_edges = self._with_retry(
                 self._mg.get_edges, from_uid=uid,
-                operation_name=f"获取出边({uid[:12]})",
+                operation_name=f"get outgoing edges({uid[:12]})",
             )
             edges.extend(out_edges)
         except Exception:
@@ -553,9 +553,9 @@ class MindGraphClient:
         try:
             in_edges = self._with_retry(
                 self._mg.get_edges, to_uid=uid,
-                operation_name=f"获取入边({uid[:12]})",
+                operation_name=f"get incoming edges({uid[:12]})",
             )
-            # 去重（如果有自环边）
+            # Deduplicate (in case of self-loop edges)
             seen = {e.get("uid") for e in edges}
             for e in in_edges:
                 if e.get("uid") not in seen:
@@ -566,33 +566,33 @@ class MindGraphClient:
         return {"nodes": nodes, "edges": edges}
 
     def get_node_history(self, uid: str) -> List[Dict[str, Any]]:
-        """获取节点版本历史"""
+        """Get node version history"""
         return self._with_retry(
             self._mg.get_node_history, uid,
-            operation_name=f"节点历史({uid[:12]})",
+            operation_name=f"node history({uid[:12]})",
         )
 
     # ═══════════════════════════════════════
-    # 图遍历
+    # Graph traversal
     # ═══════════════════════════════════════
 
     def traverse_chain(self, start_uid: str, max_depth: int = 5) -> Dict[str, Any]:
-        """推理链遍历"""
+        """Reasoning chain traversal"""
         result = self._with_retry(
             self._mg.reasoning_chain, start_uid, max_depth=max_depth,
-            operation_name=f"推理链({start_uid[:12]})",
+            operation_name=f"reasoning chain({start_uid[:12]})",
         )
         if isinstance(result, list):
             return {"chain": result}
         return result
 
     # ═══════════════════════════════════════
-    # 实体管理
+    # Entity management
     # ═══════════════════════════════════════
 
     def create_entity(self, name: str, entity_type: str, project_id: str,
                       description: str = "", props: Optional[Dict] = None) -> Dict[str, Any]:
-        """显式创建实体节点"""
+        """Explicitly create entity node"""
         entity_props = {
             "entity_type": entity_type,
             "description": description,
@@ -603,37 +603,37 @@ class MindGraphClient:
             label=name,
             props=entity_props,
             agent_id=project_id,
-            operation_name=f"创建实体({name})",
+            operation_name=f"create entity({name})",
         )
 
     def resolve_entity(self, name: str, project_id: str) -> Dict[str, Any]:
-        """精确解析实体名称"""
+        """Exact entity name resolution"""
         return self._with_retry(
             self._mg.resolve_entity, name, agent_id=project_id,
-            operation_name=f"解析实体({name})",
+            operation_name=f"resolve entity({name})",
         )
 
     def fuzzy_resolve_entity(self, name: str, project_id: str, limit: int = 5) -> Dict[str, Any]:
-        """模糊解析实体名称"""
+        """Fuzzy entity name resolution"""
         return self._with_retry(
             self._mg.fuzzy_resolve_entity, name, limit=limit, agent_id=project_id,
-            operation_name=f"模糊解析({name})",
+            operation_name=f"fuzzy resolve({name})",
         )
 
     # ═══════════════════════════════════════
-    # 边创建 + Agent注册
+    # Edge creation + Agent registration
     # ═══════════════════════════════════════
 
     def add_link(self, from_uid: str, to_uid: str, edge_type: str,
                  project_id: Optional[str] = None,
                  agent_id: Optional[str] = None) -> Any:
-        """创建通用边（轻量级）"""
-        ns = project_id or agent_id  # 兼容旧调用方式
+        """Create generic edge (lightweight)"""
+        ns = project_id or agent_id  # Backward compatible with old call style
         return self._with_retry(
             self._mg.add_link,
             from_uid=from_uid, to_uid=to_uid, edge_type=edge_type,
             agent_id=ns,
-            operation_name=f"创建边({edge_type})",
+            operation_name=f"create edge({edge_type})",
         )
 
     def batch_create(self, nodes: Optional[List[Dict]] = None,
@@ -657,7 +657,7 @@ class MindGraphClient:
             return {"nodes_added": 0, "edges_added": 0, "node_uids": [], "errors": []}
         return self._with_retry(
             self._mg.batch,
-            operation_name=f"批量创建(nodes={len(nodes or [])}, edges={len(edges or [])})",
+            operation_name=f"batch create(nodes={len(nodes or [])}, edges={len(edges or [])})",
             **kwargs,
         )
 
@@ -665,27 +665,27 @@ class MindGraphClient:
                  props: Optional[Dict] = None,
                  project_id: Optional[str] = None,
                  agent_id: Optional[str] = None) -> Any:
-        """创建带属性的边（SDK自动注入props._type）"""
-        ns = project_id or agent_id  # 兼容旧调用方式
+        """Create edge with properties (SDK auto-injects props._type)"""
+        ns = project_id or agent_id  # Backward compatible with old call style
         return self._with_retry(
             self._mg.add_edge,
             from_uid=from_uid, to_uid=to_uid, edge_type=edge_type,
             props=props,
             agent_id=ns,
-            operation_name=f"创建边({edge_type})",
+            operation_name=f"create edge({edge_type})",
         )
 
     def register_agent_node(self, name: str, project_id: str,
                             summary: str = "",
                             props: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        创建Agent节点（SDK自动注入props._type）
+        Create Agent node (SDK auto-injects props._type)
 
         Args:
-            name: Agent名称
-            project_id: 项目ID（命名空间隔离）
-            summary: Agent简介
-            props: 额外属性（stance, role, influence_weight等）
+            name: Agent name
+            project_id: Project ID (namespace isolation)
+            summary: Agent description
+            props: Additional properties (stance, role, influence_weight, etc.)
         """
         node_props = dict(props or {})
         if summary:
@@ -696,19 +696,19 @@ class MindGraphClient:
             node_type="Agent",
             props=node_props,
             agent_id=project_id,
-            operation_name=f"注册Agent({name})",
+            operation_name=f"register Agent({name})",
         )
 
     # ═══════════════════════════════════════
-    # Agent发言摄入
+    # Agent post ingestion
     # ═══════════════════════════════════════
 
     def ingest_agent_post(self, agent_name: str, content: str, project_id: str,
                           platform: str = "", round_num: int = 0) -> Dict[str, Any]:
         """
-        摄入Agent发言 — 让MindGraph自动决定认知类型
+        Ingest agent post - let MindGraph auto-determine cognitive type
 
-        返回值包含 extracted_node_uids 用于创建AUTHORED边。
+        Return value includes extracted_node_uids for creating AUTHORED edges.
         """
         text = f"{agent_name}: {content}"
         label = f"[{agent_name}] Round {round_num}"
@@ -725,7 +725,7 @@ class MindGraphClient:
     def add_claim(self, text: str, project_id: str, confidence: float = 0.6,
                   evidence_text: Optional[str] = None,
                   agent_name: Optional[str] = None) -> Dict[str, Any]:
-        """添加结构化声明"""
+        """Add structured claim"""
         claim_label = text[:100]
         if agent_name:
             claim_label = f"{agent_name}: {text[:80]}"
@@ -751,28 +751,28 @@ class MindGraphClient:
 
         return self._with_retry(
             self._mg.argue, **body,
-            operation_name=f"添加声明({agent_name or 'unknown'}, confidence={confidence:.2f})",
+            operation_name=f"add claim({agent_name or 'unknown'}, confidence={confidence:.2f})",
         )
 
     # ═══════════════════════════════════════
-    # 记忆层 - 会话管理
+    # Memory layer - Session management
     # ═══════════════════════════════════════
 
     def open_session(self, project_id: str, session_name: str) -> str:
-        """打开模拟会话"""
+        """Open simulation session"""
         result = self._with_retry(
             self._mg.session,
             action="open",
             label=session_name,
             props={"focus_summary": session_name},
             agent_id=project_id,
-            operation_name="打开会话",
+            operation_name="open session",
         )
         return result.get("uid", "")
 
     def trace_session(self, session_uid: str, content: str, project_id: str,
                       trace_type: str = "observation") -> Dict[str, Any]:
-        """添加会话跟踪条目"""
+        """Add session trace entry"""
         return self._with_retry(
             self._mg.session,
             action="trace",
@@ -780,38 +780,38 @@ class MindGraphClient:
             label=content[:100],
             props={"content": content, "trace_type": trace_type},
             agent_id=project_id,
-            operation_name="会话跟踪",
+            operation_name="session trace",
         )
 
     def close_session(self, session_uid: str, project_id: str) -> Dict[str, Any]:
-        """关闭模拟会话"""
+        """Close simulation session"""
         return self._with_retry(
             self._mg.session,
             action="close",
             session_uid=session_uid,
             agent_id=project_id,
-            operation_name="关闭会话",
+            operation_name="close session",
         )
 
     def distill(self, label: str, source_uids: List[str], project_id: str,
                 content: str = "") -> Dict[str, Any]:
-        """蒸馏摘要"""
+        """Distill summary"""
         return self._with_retry(
             self._mg.distill,
             label=label,
             summarizes_uids=source_uids,
             props={"content": content},
             agent_id=project_id,
-            operation_name="蒸馏摘要",
+            operation_name="distill summary",
         )
 
     # ═══════════════════════════════════════
-    # 认识论层 - 假说与异常
+    # Epistemic layer - Hypotheses and anomalies
     # ═══════════════════════════════════════
 
     def add_hypothesis(self, statement: str, project_id: str,
                        confidence: float = 0.5) -> Dict[str, Any]:
-        """注册可验证假说"""
+        """Register verifiable hypothesis"""
         return self._with_retry(
             self._mg.inquire,
             action="hypothesis",
@@ -823,16 +823,16 @@ class MindGraphClient:
                 "status": "proposed",
             },
             agent_id=project_id,
-            operation_name=f"注册假说(project={project_id})",
+            operation_name=f"register hypothesis(project={project_id})",
         )
 
     def record_anomaly(self, description: str, project_id: str,
                        severity: str = "medium",
                        agent_name: Optional[str] = None) -> Dict[str, Any]:
-        """记录行为异常"""
+        """Record behavioral anomaly"""
         label = description[:100]
         if agent_name:
-            label = f"[异常] {agent_name}: {description[:80]}"
+            label = f"[Anomaly] {agent_name}: {description[:80]}"
         return self._with_retry(
             self._mg.inquire,
             action="anomaly",
@@ -843,16 +843,16 @@ class MindGraphClient:
                 "severity": severity,
             },
             agent_id=project_id,
-            operation_name=f"记录异常({severity})",
+            operation_name=f"record anomaly({severity})",
         )
 
     # ═══════════════════════════════════════
-    # 认识论层 - 模式识别
+    # Epistemic layer - Pattern recognition
     # ═══════════════════════════════════════
 
     def record_pattern(self, name: str, description: str, project_id: str,
                        instance_count: int = 1) -> Dict[str, Any]:
-        """记录涌现模式"""
+        """Record emergent pattern"""
         return self._with_retry(
             self._mg.structure,
             action="pattern",
@@ -864,17 +864,17 @@ class MindGraphClient:
                 "instance_count": instance_count,
             },
             agent_id=project_id,
-            operation_name=f"记录模式({name})",
+            operation_name=f"record pattern({name})",
         )
 
     # ═══════════════════════════════════════
-    # 意图层 - 目标与决策
+    # Intent layer - Goals and decisions
     # ═══════════════════════════════════════
 
     def create_goal(self, label: str, project_id: str,
                     description: str = "", priority: str = "medium",
                     goal_type: str = "social") -> Dict[str, Any]:
-        """注册Agent目标"""
+        """Register agent goal"""
         return self._with_retry(
             self._mg.commit,
             action="goal",
@@ -886,30 +886,30 @@ class MindGraphClient:
                 "status": "active",
             },
             agent_id=project_id,
-            operation_name=f"创建目标({label[:30]})",
+            operation_name=f"create goal({label[:30]})",
         )
 
     def record_decision(self, agent_name: str, description: str,
                         chosen_option: str, rationale: str,
                         project_id: str) -> Dict[str, Any]:
         """
-        记录Agent的可观察决策
+        Record agent's observable decision
 
-        使用SDK的3步便捷方法：open_decision → add_option → resolve_decision
+        Uses SDK's 3-step convenience methods: open_decision -> add_option -> resolve_decision
         """
-        # Step 1: 打开决策
+        # Step 1: Open decision
         decision = self._with_retry(
             self._mg.open_decision,
             label=description[:100],
             props={"description": description},
             agent_id=project_id,
-            operation_name=f"打开决策({agent_name})",
+            operation_name=f"open decision({agent_name})",
         )
 
         decision_uid = decision.get("uid", "")
 
         if decision_uid:
-            # Step 2: 添加已选选项
+            # Step 2: Add chosen option
             option_uid = ""
             try:
                 option_result = self._with_retry(
@@ -918,13 +918,13 @@ class MindGraphClient:
                     label=chosen_option[:100],
                     props={"description": chosen_option},
                     agent_id=project_id,
-                    operation_name=f"添加选项({agent_name})",
+                    operation_name=f"add option({agent_name})",
                 )
                 option_uid = option_result.get("uid", "")
             except Exception as e:
-                logger.warning(f"添加决策选项失败: {e}")
+                logger.warning(f"Failed to add decision option: {e}")
 
-            # Step 3: 解决决策
+            # Step 3: Resolve decision
             if option_uid:
                 try:
                     self._with_retry(
@@ -933,21 +933,21 @@ class MindGraphClient:
                         chosen_option_uid=option_uid,
                         summary=rationale,
                         agent_id=project_id,
-                        operation_name=f"解决决策({agent_name})",
+                        operation_name=f"resolve decision({agent_name})",
                     )
                 except Exception as e:
-                    logger.warning(f"解决决策失败: {e}")
+                    logger.warning(f"Failed to resolve decision: {e}")
 
         return decision
 
     # ═══════════════════════════════════════
-    # 记忆层 - Journal
+    # Memory layer - Journal
     # ═══════════════════════════════════════
 
     def create_journal(self, content: str, project_id: str,
                        journal_type: str = "stance", tags: Optional[List[str]] = None,
                        session_uid: Optional[str] = None) -> Dict[str, Any]:
-        """创建Journal记忆条目（Memory层）"""
+        """Create Journal memory entry (Memory layer)"""
         return self._with_retry(
             self._mg.journal,
             label=content[:100],
@@ -958,17 +958,17 @@ class MindGraphClient:
             },
             session_uid=session_uid,
             agent_id=project_id,
-            operation_name=f"创建Journal({journal_type})",
+            operation_name=f"create Journal({journal_type})",
         )
 
     # ═══════════════════════════════════════
-    # 现实层 - 观察记录
+    # Reality layer - Observation recording
     # ═══════════════════════════════════════
 
     def capture_observation(self, content: str, project_id: str,
                             observation_type: str = "simulation_event") -> Dict[str, Any]:
         """
-        记录事实观察 — 创建Observation节点（Reality层）
+        Record factual observation - create Observation node (Reality layer)
 
         Uses add_node with node_type="Observation" (low-level CRUD).
         """
@@ -981,51 +981,51 @@ class MindGraphClient:
                 "observation_type": observation_type,
             },
             agent_id=project_id,
-            operation_name=f"记录观察({observation_type})",
+            operation_name=f"capture observation({observation_type})",
         )
 
     # ═══════════════════════════════════════
-    # 生命周期管理
+    # Lifecycle management
     # ═══════════════════════════════════════
 
     def delete_node(self, uid: str) -> Any:
-        """软删除节点"""
+        """Soft delete node"""
         return self._with_retry(
             self._mg.delete_node, uid,
-            operation_name=f"删除节点({uid[:12]})",
+            operation_name=f"delete node({uid[:12]})",
         )
 
     def decay_salience(self, project_id: str, half_life_secs: int = 86400,
                        min_salience: float = 0.1) -> Dict[str, Any]:
         """
-        批量衰减显著度
+        Batch decay salience
 
-        警告：SDK的 decay() 是全局操作，会影响所有项目的节点，
-        不仅限于 project_id 指定的项目。project_id 仅用于日志记录。
+        Warning: SDK's decay() is a global operation that affects all project nodes,
+        not just the project specified by project_id. project_id is used for logging only.
         """
         logger.warning(
-            f"decay_salience 是全局操作，将影响所有项目节点 "
-            f"(调用方: project={project_id})"
+            f"decay_salience is a global operation that will affect all project nodes "
+            f"(caller: project={project_id})"
         )
         result = self._with_retry(
             self._mg.decay,
             half_life_secs=half_life_secs,
             min_salience=min_salience,
-            operation_name=f"批量衰减(caller={project_id})",
+            operation_name=f"batch decay(caller={project_id})",
         )
-        logger.info(f"批量衰减完成: caller={project_id}, result={result}")
+        logger.info(f"Batch decay complete: caller={project_id}, result={result}")
         return result if isinstance(result, dict) else {"result": result}
 
     def delete_project_data(self, project_id: str):
         """
-        删除项目的所有数据
+        Delete all data for a project
 
-        使用list_all_nodes()（优先get_agent_nodes）确保只删除
-        属于该项目命名空间的节点，而非全局节点。
+        Uses list_all_nodes() (prefers get_agent_nodes) to ensure only nodes
+        belonging to this project's namespace are deleted, not global nodes.
         """
-        logger.info(f"开始删除项目数据: project_id={project_id}")
+        logger.info(f"Starting project data deletion: project_id={project_id}")
         deleted = 0
-        max_iterations = 100  # 安全限制，防止无限循环
+        max_iterations = 100  # Safety limit to prevent infinite loops
 
         for iteration in range(max_iterations):
             nodes = self.list_all_nodes(project_id=project_id, max_items=100)
@@ -1038,21 +1038,21 @@ class MindGraphClient:
                         self.delete_node(uid)
                         deleted += 1
                     except Exception as e:
-                        logger.warning(f"删除节点失败: uid={uid}, error={e}")
+                        logger.warning(f"Failed to delete node: uid={uid}, error={e}")
         else:
             logger.warning(
-                f"delete_project_data 达到迭代上限({max_iterations}): "
+                f"delete_project_data reached iteration limit ({max_iterations}): "
                 f"project_id={project_id}, deleted={deleted}"
             )
 
-        logger.info(f"项目数据删除完成: project_id={project_id}, deleted={deleted}")
+        logger.info(f"Project data deletion complete: project_id={project_id}, deleted={deleted}")
 
     # ═══════════════════════════════════════
-    # 统计与导出
+    # Statistics and export
     # ═══════════════════════════════════════
 
     def get_graph_statistics(self, project_id: str) -> Dict[str, Any]:
-        """获取图谱统计信息"""
+        """Get graph statistics"""
         nodes = self.list_all_nodes(project_id=project_id)
         edges = self.list_all_edges(project_id=project_id)
 

@@ -1,6 +1,6 @@
 """
-图谱构建服务
-使用MindGraph API构建知识图谱
+Graph construction service
+Builds knowledge graphs using the MindGraph API
 """
 
 import uuid
@@ -21,7 +21,7 @@ logger = get_logger('mirofish.graph_builder')
 
 @dataclass
 class GraphInfo:
-    """图谱信息"""
+    """Graph information"""
     graph_id: str
     node_count: int
     edge_count: int
@@ -38,16 +38,16 @@ class GraphInfo:
 
 class GraphBuilderService:
     """
-    图谱构建服务
-    负责调用MindGraph API构建知识图谱
+    Graph construction service
+    Responsible for calling MindGraph API to build knowledge graphs
     """
 
-    # 同步摄入的文本块最大字符数（MindGraph sync chunk limit）
+    # Max characters for synchronous ingestion text chunks (MindGraph sync chunk limit)
     SYNC_CHUNK_MAX_CHARS = 7500
 
     def __init__(self):
         if not Config.MINDGRAPH_API_KEY:
-            raise ValueError("MINDGRAPH_API_KEY 未配置")
+            raise ValueError("MINDGRAPH_API_KEY is not configured")
 
         self.client = MindGraphClient()
         self.task_manager = TaskManager()
@@ -62,18 +62,18 @@ class GraphBuilderService:
         batch_size: int = 3
     ) -> str:
         """
-        异步构建图谱
+        Build graph asynchronously
 
         Args:
-            text: 输入文本
-            ontology: 本体定义（来自接口1的输出）
-            graph_name: 图谱名称
-            chunk_size: 文本块大小
-            chunk_overlap: 块重叠大小
-            batch_size: 每批发送的块数量
+            text: Input text
+            ontology: Ontology definition (from interface 1 output)
+            graph_name: Graph name
+            chunk_size: Text chunk size
+            chunk_overlap: Chunk overlap size
+            batch_size: Number of chunks per batch
 
         Returns:
-            任务ID
+            Task ID
         """
         task_id = self.task_manager.create_task(
             task_type="graph_build",
@@ -103,41 +103,41 @@ class GraphBuilderService:
         chunk_overlap: int,
         batch_size: int
     ):
-        """图谱构建工作线程"""
+        """Graph construction worker thread"""
         try:
             self.task_manager.update_task(
                 task_id,
                 status=TaskStatus.PROCESSING,
                 progress=5,
-                message="开始构建图谱..."
+                message="Starting graph construction..."
             )
 
-            # 1. 创建图谱（生成命名空间ID）
+            # 1. Create graph (generate namespace ID)
             graph_id = self.create_graph(graph_name)
             self.task_manager.update_task(
                 task_id,
                 progress=10,
-                message=f"图谱已创建: {graph_id}"
+                message=f"Graph created: {graph_id}"
             )
 
-            # 2. 设置本体（MindGraph有内置类型，此步骤为轻量级元数据记录）
+            # 2. Set ontology (MindGraph has built-in types; this step is lightweight metadata recording)
             self.set_ontology(graph_id, ontology)
             self.task_manager.update_task(
                 task_id,
                 progress=15,
-                message="本体已设置"
+                message="Ontology set"
             )
 
-            # 3. 文本分块
+            # 3. Text chunking
             chunks = TextProcessor.split_text(text, chunk_size, chunk_overlap)
             total_chunks = len(chunks)
             self.task_manager.update_task(
                 task_id,
                 progress=20,
-                message=f"文本已分割为 {total_chunks} 个块"
+                message=f"Text split into {total_chunks} chunks"
             )
 
-            # 4. 分批发送数据到MindGraph
+            # 4. Send data to MindGraph in batches
             job_ids = self.add_text_batches(
                 graph_id, chunks, batch_size,
                 lambda msg, prog: self.task_manager.update_task(
@@ -147,11 +147,11 @@ class GraphBuilderService:
                 )
             )
 
-            # 5. 等待MindGraph处理完成
+            # 5. Wait for MindGraph processing to complete
             self.task_manager.update_task(
                 task_id,
                 progress=60,
-                message="等待MindGraph处理数据..."
+                message="Waiting for MindGraph to process data..."
             )
 
             self._wait_for_jobs(
@@ -163,16 +163,16 @@ class GraphBuilderService:
                 )
             )
 
-            # 6. 获取图谱信息
+            # 6. Get graph information
             self.task_manager.update_task(
                 task_id,
                 progress=90,
-                message="获取图谱信息..."
+                message="Retrieving graph information..."
             )
 
             graph_info = self._get_graph_info(graph_id)
 
-            # 完成
+            # Complete
             self.task_manager.complete_task(task_id, {
                 "graph_id": graph_id,
                 "graph_info": graph_info.to_dict(),
@@ -186,27 +186,27 @@ class GraphBuilderService:
 
     def create_graph(self, name: str) -> str:
         """
-        创建图谱（生成命名空间ID）
+        Create graph (generate namespace ID)
 
-        MindGraph没有per-graph隔离，所以graph_id仅作为agent_id命名空间使用。
-        不需要调用MindGraph API创建"图谱"——命名空间由agent_id参数隐式创建。
+        MindGraph has no per-graph isolation, so graph_id is only used as an agent_id namespace.
+        No need to call MindGraph API to create a "graph" -- the namespace is implicitly created via the agent_id parameter.
         """
         graph_id = f"mirofish_{uuid.uuid4().hex[:16]}"
-        logger.info(f"创建图谱命名空间: {graph_id}, name={name}")
+        logger.info(f"Created graph namespace: {graph_id}, name={name}")
         return graph_id
 
     def set_ontology(self, graph_id: str, ontology: Dict[str, Any]):
         """
-        设置图谱本体
+        Set graph ontology
 
-        MindGraph有56种内置节点类型，不需要动态创建Pydantic类。
-        我们为每个本体定义的实体类型预创建"锚点"Entity节点，
-        帮助MindGraph的实体解析在自动提取时正确匹配类型。
+        MindGraph has 56 built-in node types, so no need to dynamically create Pydantic classes.
+        We pre-create "anchor" Entity nodes for each ontology-defined entity type,
+        helping MindGraph's entity resolution correctly match types during automatic extraction.
         """
         entity_types = ontology.get("entity_types", [])
         edge_types = ontology.get("edge_types", [])
 
-        # 预创建实体类型锚点，帮助MindGraph的entity resolution
+        # Pre-create entity type anchors to help MindGraph's entity resolution
         created = 0
         for entity_def in entity_types:
             name = entity_def.get("name", "")
@@ -220,11 +220,11 @@ class GraphBuilderService:
                 )
                 created += 1
             except Exception as e:
-                logger.warning(f"创建实体类型锚点失败 ({name}): {e}")
+                logger.warning(f"Failed to create entity type anchor ({name}): {e}")
 
         logger.info(
-            f"本体已设置: {len(entity_types)} 个实体类型 ({created} 个锚点已创建), "
-            f"{len(edge_types)} 个关系类型"
+            f"Ontology set: {len(entity_types)} entity types ({created} anchors created), "
+            f"{len(edge_types)} relationship types"
         )
 
     def add_text_batches(
@@ -235,10 +235,10 @@ class GraphBuilderService:
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
         """
-        分批添加文本到MindGraph，返回异步任务的job_id列表
+        Add text to MindGraph in batches, returning a list of async job_ids
 
-        对于短文本块（<7500字符）使用同步 /ingest/chunk 接口；
-        对于长文本块使用异步 /ingest/document 接口。
+        Short text chunks (<7500 chars) use the synchronous /ingest/chunk endpoint;
+        long text chunks use the async /ingest/document endpoint.
         """
         job_ids = []
         total_chunks = len(chunks)
@@ -251,14 +251,14 @@ class GraphBuilderService:
             if progress_callback:
                 progress = (i + len(batch_chunks)) / total_chunks
                 progress_callback(
-                    f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
+                    f"Sending batch {batch_num}/{total_batches} ({len(batch_chunks)} chunks)...",
                     progress
                 )
 
-            # 种子文档使用 reality+epistemic 层提取实体和关系
+            # Seed documents use reality+epistemic layers to extract entities and relationships
             seed_layers = ["reality", "epistemic"]
 
-            # 并行提交batch内的chunks
+            # Submit chunks within batch in parallel
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
                     futures = []
@@ -281,9 +281,9 @@ class GraphBuilderService:
                             ))
 
                     for future in concurrent.futures.as_completed(futures):
-                        result = future.result()  # 失败时抛出异常
+                        result = future.result()  # Raises exception on failure
                         if isinstance(result, str) and result:
-                            # ingest_document 返回 job_id 字符串
+                            # ingest_document returns job_id string
                             job_ids.append(result)
                         elif isinstance(result, dict):
                             job_id = result.get("job_id")
@@ -291,10 +291,10 @@ class GraphBuilderService:
                                 job_ids.append(job_id)
             except Exception as e:
                 if progress_callback:
-                    progress_callback(f"批次 {batch_num} 发送失败: {str(e)}", 0)
+                    progress_callback(f"Batch {batch_num} sending failed: {str(e)}", 0)
                 raise
 
-            # 避免请求过快
+            # Avoid sending requests too fast
             time.sleep(0.5)
 
         return job_ids
@@ -305,10 +305,10 @@ class GraphBuilderService:
         progress_callback: Optional[Callable] = None,
         timeout: int = 600
     ):
-        """等待所有异步摄入任务完成"""
+        """Wait for all async ingestion tasks to complete"""
         if not job_ids:
             if progress_callback:
-                progress_callback("所有文本块已同步处理完成", 1.0)
+                progress_callback("All text chunks processed synchronously", 1.0)
             return
 
         start_time = time.time()
@@ -317,13 +317,13 @@ class GraphBuilderService:
         total_jobs = len(job_ids)
 
         if progress_callback:
-            progress_callback(f"开始等待 {total_jobs} 个异步任务处理...", 0)
+            progress_callback(f"Waiting for {total_jobs} async tasks to process...", 0)
 
         while pending_jobs:
             if time.time() - start_time > timeout:
                 if progress_callback:
                     progress_callback(
-                        f"部分任务超时，已完成 {completed_count}/{total_jobs}",
+                        f"Some tasks timed out, completed {completed_count}/{total_jobs}",
                         completed_count / total_jobs
                     )
                 break
@@ -338,8 +338,8 @@ class GraphBuilderService:
                         if status == "completed":
                             completed_count += 1
                         else:
-                            logger.warning(f"摄入任务 {job_id} 状态: {status}")
-                            completed_count += 1  # 仍然算进度
+                            logger.warning(f"Ingestion task {job_id} status: {status}")
+                            completed_count += 1  # Still counts toward progress
 
                 except Exception:
                     pass
@@ -347,8 +347,8 @@ class GraphBuilderService:
             elapsed = int(time.time() - start_time)
             if progress_callback:
                 progress_callback(
-                    f"MindGraph处理中... {completed_count}/{total_jobs} 完成, "
-                    f"{len(pending_jobs)} 待处理 ({elapsed}秒)",
+                    f"MindGraph processing... {completed_count}/{total_jobs} completed, "
+                    f"{len(pending_jobs)} pending ({elapsed}s)",
                     completed_count / total_jobs if total_jobs > 0 else 0
                 )
 
@@ -356,17 +356,17 @@ class GraphBuilderService:
                 time.sleep(3)
 
         if progress_callback:
-            progress_callback(f"处理完成: {completed_count}/{total_jobs}", 1.0)
+            progress_callback(f"Processing complete: {completed_count}/{total_jobs}", 1.0)
 
     def _get_graph_info(self, graph_id: str) -> GraphInfo:
-        """获取图谱信息"""
-        # 先尝试实体去重
+        """Get graph information"""
+        # Try entity deduplication first
         self._deduplicate_entities(graph_id)
 
         nodes = self.client.list_all_nodes(project_id=graph_id)
         edges = self.client.list_all_edges(project_id=graph_id)
 
-        # 统计实体类型
+        # Count entity types
         entity_types = set()
         for node in nodes:
             node_type = node.get("node_type", node.get("type", ""))
@@ -382,10 +382,10 @@ class GraphBuilderService:
 
     def _deduplicate_entities(self, graph_id: str):
         """
-        利用MindGraph的模糊实体解析尝试合并重复实体
+        Attempt to merge duplicate entities using MindGraph's fuzzy entity resolution
 
-        MindGraph的built-in alias matching和fuzzy_resolve会在摄入时
-        自动去重大部分实体。此方法记录最终的实体分布供日志使用。
+        MindGraph's built-in alias matching and fuzzy_resolve automatically
+        deduplicate most entities during ingestion. This method logs the final entity distribution.
         """
         try:
             nodes = self.client.list_all_nodes(project_id=graph_id)
@@ -394,21 +394,21 @@ class GraphBuilderService:
                 if n.get("node_type", n.get("type", "")) == "Entity"
             ]
             logger.info(
-                f"实体去重检查: {len(entity_nodes)} 个Entity节点 / "
-                f"{len(nodes)} 个总节点 (MindGraph自动去重)"
+                f"Entity dedup check: {len(entity_nodes)} Entity nodes / "
+                f"{len(nodes)} total nodes (MindGraph auto-dedup)"
             )
         except Exception as e:
-            logger.debug(f"实体去重检查失败: {e}")
+            logger.debug(f"Entity dedup check failed: {e}")
 
     def get_graph_data(self, graph_id: str, source: str = "upload") -> Dict[str, Any]:
         """
-        获取完整图谱数据（包含详细信息）
+        Get complete graph data (with detailed information)
 
-        返回格式与前端兼容（保持原有API契约）
+        Return format is frontend-compatible (maintains existing API contract)
 
         Args:
-            graph_id: 图谱ID
-            source: "upload"（按agent_id过滤）或 "mindgraph"（读取全量图谱）
+            graph_id: Graph ID
+            source: "upload" (filter by agent_id) or "mindgraph" (read full graph)
         """
         if source == "mindgraph":
             nodes = self.client.list_all_graph_nodes()
@@ -417,7 +417,7 @@ class GraphBuilderService:
             nodes = self.client.list_all_nodes(project_id=graph_id)
             edges = self.client.list_all_edges(project_id=graph_id)
 
-        # 创建节点映射用于获取节点名称
+        # Create node mapping for resolving node names
         node_map = {}
         for node in nodes:
             uid = node.get("uid", "")
@@ -472,5 +472,5 @@ class GraphBuilderService:
         }
 
     def delete_graph(self, graph_id: str):
-        """删除图谱（清除该命名空间下的所有数据）"""
+        """Delete graph (clear all data under this namespace)"""
         self.client.delete_project_data(project_id=graph_id)

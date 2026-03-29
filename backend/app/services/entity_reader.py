@@ -1,6 +1,6 @@
 """
-实体读取与过滤服务
-从MindGraph图谱中读取节点，筛选出符合预定义实体类型的节点
+Entity reading and filtering service
+Reads nodes from MindGraph graph and filters those matching predefined entity types
 """
 
 import time
@@ -18,15 +18,15 @@ T = TypeVar('T')
 
 @dataclass
 class EntityNode:
-    """实体节点数据结构"""
+    """Entity node data structure"""
     uuid: str
     name: str
     labels: List[str]
     summary: str
     attributes: Dict[str, Any]
-    # 相关的边信息
+    # Related edge information
     related_edges: List[Dict[str, Any]] = field(default_factory=list)
-    # 相关的其他节点信息
+    # Related node information
     related_nodes: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -41,7 +41,7 @@ class EntityNode:
         }
 
     def get_entity_type(self) -> Optional[str]:
-        """获取实体类型（排除默认的Entity标签）"""
+        """Get entity type (excluding the default Entity label)"""
         for label in self.labels:
             if label not in ["Entity", "Node", "Unknown"]:
                 return label
@@ -50,7 +50,7 @@ class EntityNode:
 
 @dataclass
 class FilteredEntities:
-    """过滤后的实体集合"""
+    """Filtered entity collection"""
     entities: List[EntityNode]
     entity_types: Set[str]
     total_count: int
@@ -67,22 +67,22 @@ class FilteredEntities:
 
 class EntityReader:
     """
-    实体读取与过滤服务
+    Entity reading and filtering service
 
-    主要功能：
-    1. 从MindGraph图谱读取所有节点
-    2. 筛选出符合预定义实体类型的节点
-    3. 获取每个实体的相关边和关联节点信息
+    Main features:
+    1. Read all nodes from MindGraph graph
+    2. Filter nodes matching predefined entity types
+    3. Get related edges and associated node info for each entity
     """
 
     def __init__(self):
         if not Config.MINDGRAPH_API_KEY:
-            raise ValueError("MINDGRAPH_API_KEY 未配置")
+            raise ValueError("MINDGRAPH_API_KEY is not configured")
         self.client = MindGraphClient()
 
     @staticmethod
     def _normalize_node(mg_node: Dict[str, Any]) -> Dict[str, Any]:
-        """将MindGraph节点转换为内部格式"""
+        """Convert MindGraph node to internal format"""
         node_type = mg_node.get("node_type", mg_node.get("type", "Entity"))
         return {
             "uuid": mg_node.get("uid", ""),
@@ -94,7 +94,7 @@ class EntityReader:
 
     @staticmethod
     def _normalize_edge(mg_edge: Dict[str, Any]) -> Dict[str, Any]:
-        """将MindGraph边转换为内部格式"""
+        """Convert MindGraph edge to internal format"""
         return {
             "uuid": mg_edge.get("uid", ""),
             "name": mg_edge.get("edge_type", mg_edge.get("type", "")),
@@ -106,63 +106,63 @@ class EntityReader:
 
     def get_all_nodes(self, graph_id: str, source: str = "upload") -> List[Dict[str, Any]]:
         """
-        获取图谱的所有节点
+        Get all nodes from the graph
 
         Args:
-            graph_id: 图谱ID（MindGraph命名空间）
-            source: 数据来源 "upload"（按agent_id过滤）或 "mindgraph"（读取全量图谱）
+            graph_id: Graph ID (MindGraph namespace)
+            source: Data source - "upload" (filter by agent_id) or "mindgraph" (read full graph)
 
         Returns:
-            节点列表（内部格式）
+            Node list (internal format)
         """
-        logger.info(f"获取图谱节点: graph_id={graph_id}, source={source}")
+        logger.info(f"Getting graph nodes: graph_id={graph_id}, source={source}")
         if source == "mindgraph":
             mg_nodes = self.client.list_all_graph_nodes()
         else:
             mg_nodes = self.client.list_all_nodes(project_id=graph_id)
         nodes_data = [self._normalize_node(n) for n in mg_nodes]
-        logger.info(f"共获取 {len(nodes_data)} 个节点")
+        logger.info(f"Retrieved {len(nodes_data)} nodes")
         return nodes_data
 
     def get_all_edges(self, graph_id: str, source: str = "upload",
                       raw_nodes: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """
-        获取图谱的所有边
+        Get all edges from the graph
 
         Args:
-            graph_id: 图谱ID
-            source: 数据来源
-            raw_nodes: 预先获取的原始MindGraph节点（避免重复查询）
+            graph_id: Graph ID
+            source: Data source
+            raw_nodes: Pre-fetched raw MindGraph nodes (to avoid duplicate queries)
 
         Returns:
-            边列表（内部格式）
+            Edge list (internal format)
         """
-        logger.info(f"获取图谱边: graph_id={graph_id}, source={source}")
+        logger.info(f"Getting graph edges: graph_id={graph_id}, source={source}")
         if source == "mindgraph":
             mg_edges = self.client.list_all_graph_edges(nodes=raw_nodes)
         else:
             mg_edges = self.client.list_all_edges(project_id=graph_id)
         edges_data = [self._normalize_edge(e) for e in mg_edges]
-        logger.info(f"共获取 {len(edges_data)} 条边")
+        logger.info(f"Retrieved {len(edges_data)} edges")
         return edges_data
 
     def get_node_edges(self, node_uuid: str) -> List[Dict[str, Any]]:
         """
-        获取指定节点的所有相关边
+        Get all related edges for a given node
 
         Args:
-            node_uuid: 节点UUID
+            node_uuid: Node UUID
 
         Returns:
-            边列表
+            Edge list
         """
         try:
             neighborhood = self.client.get_neighborhood(uid=node_uuid, depth=1)
-            # 从邻居结果中提取边
+            # Extract edges from neighborhood result
             edges_raw = neighborhood.get("edges", [])
             return [self._normalize_edge(e) for e in edges_raw]
         except Exception as e:
-            logger.warning(f"获取节点 {node_uuid} 的边失败: {str(e)}")
+            logger.warning(f"Failed to get edges for node {node_uuid}: {str(e)}")
             return []
 
     def _rank_by_relevance(
@@ -190,12 +190,12 @@ class EntityReader:
             keywords = GraphContextProvider._summarize_feed(requirement)
             if not keywords:
                 keywords = requirement[:50]
-                logger.info("需求摘要失败, 使用原始文本前50字符")
+                logger.info("Requirement summarization failed, using first 50 chars of raw text")
         except Exception as e:
             keywords = requirement[:50]
-            logger.warning(f"需求摘要异常: {e}")
+            logger.warning(f"Requirement summarization error: {e}")
 
-        logger.info(f"实体相关性排序: query='{keywords[:80]}...'")
+        logger.info(f"Entity relevance ranking: query='{keywords[:80]}...'")
 
         # Step 2: Retrieve epistemic context
         try:
@@ -210,7 +210,7 @@ class EntityReader:
             chunks = result.get("chunks", [])
             graph_nodes = result.get("graph", {}).get("nodes", [])
         except Exception as e:
-            logger.warning(f"相关性检索失败, 降级为连接度排序: {e}")
+            logger.warning(f"Relevance retrieval failed, falling back to connectivity ranking: {e}")
             entities.sort(key=lambda e: len(e.related_edges), reverse=True)
             return entities[:max_entities]
 
@@ -248,9 +248,9 @@ class EntityReader:
         # Log results
         mentioned_count = sum(1 for s, _ in scored[:max_entities] if s >= 100)
         logger.info(
-            f"实体相关性排序完成: {total} → {len(deduped)} (去重) → {len(selected)} "
-            f"({mentioned_count} 与主题相关, "
-            f"{len(selected) - mentioned_count} 按连接度补充)"
+            f"Entity relevance ranking complete: {total} → {len(deduped)} (deduped) → {len(selected)} "
+            f"({mentioned_count} topic-relevant, "
+            f"{len(selected) - mentioned_count} padded by connectivity)"
         )
         if selected:
             top5 = [e.name for e in selected[:5]]
@@ -268,38 +268,38 @@ class EntityReader:
         source: str = "upload"
     ) -> FilteredEntities:
         """
-        筛选出符合预定义实体类型的节点
+        Filter nodes matching predefined entity types
 
-        筛选逻辑：
-        - MindGraph节点有node_type字段，检查是否为有意义的实体类型
-        - 过滤掉通用类型(Entity, Node, Unknown, Snippet, Chunk等基础类型)
-        - 对于MindGraph原生实体（node_type="Entity"），检查props.entity_type作为实际类型
+        Filtering logic:
+        - MindGraph nodes have a node_type field; check if it's a meaningful entity type
+        - Filter out generic types (Entity, Node, Unknown, Snippet, Chunk and other base types)
+        - For native MindGraph entities (node_type="Entity"), check props.entity_type as the actual type
 
         Args:
-            graph_id: 图谱ID
-            defined_entity_types: 预定义的实体类型列表
-            enrich_with_edges: 是否获取每个实体的相关边信息
-            source: 数据来源 "upload" 或 "mindgraph"
+            graph_id: Graph ID
+            defined_entity_types: List of predefined entity types
+            enrich_with_edges: Whether to get related edge info for each entity
+            source: Data source - "upload" or "mindgraph"
 
         Returns:
-            FilteredEntities: 过滤后的实体集合
+            FilteredEntities: Filtered entity collection
         """
-        logger.info(f"开始筛选图谱 {graph_id} 的实体 (source={source})...")
+        logger.info(f"Starting entity filtering for graph {graph_id} (source={source})...")
 
-        # 获取节点
-        # MindGraph模式：只获取Entity类型节点（服务端过滤，大幅减少数据量）
+        # Get nodes
+        # MindGraph mode: only get Entity type nodes (server-side filtering, significantly reducing data volume)
         if source == "mindgraph":
-            logger.info("MindGraph模式: 仅获取Entity类型节点...")
+            logger.info("MindGraph mode: fetching Entity type nodes only...")
             mg_nodes = self.client.list_all_graph_nodes(node_type="Entity")
             all_nodes = [self._normalize_node(n) for n in mg_nodes]
         else:
             all_nodes = self.get_all_nodes(graph_id, source=source)
         total_count = len(all_nodes)
 
-        # 构建节点UUID到节点数据的映射
+        # Build node UUID to node data mapping
         node_map = {n["uuid"]: n for n in all_nodes}
 
-        # ========== 筛选实体节点 ==========
+        # ========== Filter entity nodes ==========
         #
         # MindGraph has 55+ node types across 6 cognitive layers.
         # Only "Entity" nodes represent real-world entities (people, orgs, places).
@@ -318,7 +318,7 @@ class EntityReader:
                 labels = node.get("labels", [])
                 if "Entity" in labels:
                     entity_candidates.append(node)
-            logger.info(f"MindGraph模式: {len(entity_candidates)}/{total_count} 个Entity节点")
+            logger.info(f"MindGraph mode: {len(entity_candidates)}/{total_count} Entity nodes")
         else:
             # Blocklist: exclude infrastructure types (upload mode)
             BASE_TYPES = {
@@ -346,14 +346,14 @@ class EntityReader:
                 custom_labels = [l for l in labels if l not in BASE_TYPES]
                 if custom_labels:
                     entity_candidates.append(node)
-            logger.info(f"上传模式: {len(entity_candidates)}/{total_count} 个自定义类型节点")
+            logger.info(f"Upload mode: {len(entity_candidates)}/{total_count} custom type nodes")
 
-        # 获取所有边（仅当有候选实体且需要边信息时）
+        # Get all edges (only when there are candidate entities and edge info is needed)
         all_edges = []
         if entity_candidates and enrich_with_edges:
             all_edges = self.get_all_edges(graph_id, source=source)
 
-        # ========== 分类entity_type并过滤 ==========
+        # ========== Classify entity_type and filter ==========
         #
         # MindGraph Entity nodes can represent anything extracted from text:
         # people, organizations, concepts, events, places, policies, etc.
@@ -365,7 +365,7 @@ class EntityReader:
             for node in entity_candidates:
                 et = node.get("attributes", {}).get("entity_type", "Unknown")
                 type_counts[et] = type_counts.get(et, 0) + 1
-            logger.info(f"Entity type分布: {dict(sorted(type_counts.items(), key=lambda x: -x[1]))}")
+            logger.info(f"Entity type distribution: {dict(sorted(type_counts.items(), key=lambda x: -x[1]))}")
 
         # Only person/human and organization entities can become agent personas.
         # MindGraph entity_type docs: "Type of entity (person, org, technology, etc.)"
@@ -406,15 +406,15 @@ class EntityReader:
                 custom_labels = [l for l in labels if l not in BASE_TYPES_UPLOAD]
                 entity_type = custom_labels[0] if custom_labels else "Unknown"
 
-            # 如果指定了预定义类型，检查是否匹配
+            # If predefined types are specified, check for a match
             if defined_entity_types:
                 if entity_type not in defined_entity_types:
                     continue
 
             entity_types_found.add(entity_type)
 
-            # 创建实体节点对象
-            # 确保labels包含解析后的entity_type（供下游使用）
+            # Create entity node object
+            # Ensure labels contain the resolved entity_type (for downstream use)
             entity_labels = list(labels)
             if entity_type and entity_type not in entity_labels:
                 entity_labels.append(entity_type)
@@ -427,7 +427,7 @@ class EntityReader:
                 attributes=node["attributes"],
             )
 
-            # 获取相关边和节点
+            # Get related edges and nodes
             if enrich_with_edges:
                 related_edges = []
                 related_node_uuids = set()
@@ -469,7 +469,7 @@ class EntityReader:
             filtered_entities.append(entity)
 
         if skipped_types:
-            logger.info(f"跳过非Agent实体类型: {dict(sorted(skipped_types.items(), key=lambda x: -x[1]))}")
+            logger.info(f"Skipped non-agent entity types: {dict(sorted(skipped_types.items(), key=lambda x: -x[1]))}")
 
         # Rank and limit if requested
         if max_entities > 0 and len(filtered_entities) > max_entities:
@@ -484,12 +484,12 @@ class EntityReader:
                 filtered_entities.sort(key=lambda e: len(e.related_edges), reverse=True)
                 filtered_entities = filtered_entities[:max_entities]
                 logger.info(
-                    f"按图谱连接度排序: top {max_entities} "
-                    f"(边数: {len(filtered_entities[-1].related_edges)}-{len(filtered_entities[0].related_edges)})"
+                    f"Ranked by graph connectivity: top {max_entities} "
+                    f"(edge count: {len(filtered_entities[-1].related_edges)}-{len(filtered_entities[0].related_edges)})"
                 )
 
-        logger.info(f"筛选完成: 总节点 {total_count}, 符合条件 {len(filtered_entities)}, "
-                   f"实体类型: {entity_types_found}")
+        logger.info(f"Filtering complete: total nodes {total_count}, matched {len(filtered_entities)}, "
+                   f"entity types: {entity_types_found}")
 
         return FilteredEntities(
             entities=filtered_entities,
@@ -504,7 +504,7 @@ class EntityReader:
         entity_uuid: str
     ) -> Optional[EntityNode]:
         """
-        获取单个实体及其完整上下文（边和关联节点）
+        Get a single entity with its full context (edges and associated nodes)
         """
         try:
             mg_node = self.client.get_node(uid=entity_uuid)
@@ -513,14 +513,14 @@ class EntityReader:
 
             node = self._normalize_node(mg_node)
 
-            # 获取节点的边
+            # Get edges for the node
             edges = self.get_node_edges(entity_uuid)
 
-            # 获取所有节点用于关联查找
+            # Get all nodes for association lookup
             all_nodes = self.get_all_nodes(graph_id)
             node_map_data = {n["uuid"]: n for n in all_nodes}
 
-            # 处理相关边和节点
+            # Process related edges and nodes
             related_edges = []
             related_node_uuids = set()
 
@@ -564,7 +564,7 @@ class EntityReader:
             )
 
         except Exception as e:
-            logger.error(f"获取实体 {entity_uuid} 失败: {str(e)}")
+            logger.error(f"Failed to get entity {entity_uuid}: {str(e)}")
             return None
 
     def get_entities_by_type(
@@ -574,7 +574,7 @@ class EntityReader:
         enrich_with_edges: bool = True,
         source: str = "upload"
     ) -> List[EntityNode]:
-        """获取指定类型的所有实体"""
+        """Get all entities of a specified type"""
         result = self.filter_defined_entities(
             graph_id=graph_id,
             defined_entity_types=[entity_type],

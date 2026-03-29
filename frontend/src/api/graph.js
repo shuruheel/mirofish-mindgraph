@@ -1,8 +1,8 @@
 import service, { requestWithRetry } from './index'
 
 /**
- * 生成本体（上传文档和模拟需求）
- * @param {Object} data - 包含files, simulation_requirement, project_name等
+ * Generate ontology (upload documents and simulation requirements)
+ * @param {Object} data - Contains files, simulation_requirement, project_name, etc.
  * @returns {Promise}
  */
 export function generateOntology(formData) {
@@ -19,8 +19,8 @@ export function generateOntology(formData) {
 }
 
 /**
- * 构建图谱
- * @param {Object} data - 包含project_id, graph_name等
+ * Build graph
+ * @param {Object} data - Contains project_id, graph_name, etc.
  * @returns {Promise}
  */
 export function buildGraph(data) {
@@ -34,8 +34,8 @@ export function buildGraph(data) {
 }
 
 /**
- * 查询任务状态
- * @param {String} taskId - 任务ID
+ * Query task status
+ * @param {String} taskId - Task ID
  * @returns {Promise}
  */
 export function getTaskStatus(taskId) {
@@ -46,9 +46,9 @@ export function getTaskStatus(taskId) {
 }
 
 /**
- * 获取图谱数据
- * @param {String} graphId - 图谱ID
- * @param {Object} params - 可选参数 { source: 'upload' | 'mindgraph' }
+ * Get graph data
+ * @param {String} graphId - Graph ID
+ * @param {Object} params - Optional parameters { source: 'upload' | 'mindgraph' }
  * @returns {Promise}
  */
 export function getGraphData(graphId, params = {}) {
@@ -60,8 +60,8 @@ export function getGraphData(graphId, params = {}) {
 }
 
 /**
- * 获取项目信息
- * @param {String} projectId - 项目ID
+ * Get project information
+ * @param {String} projectId - Project ID
  * @returns {Promise}
  */
 export function getProject(projectId) {
@@ -72,7 +72,7 @@ export function getProject(projectId) {
 }
 
 /**
- * 连接已有的MindGraph知识图谱（跳过文档上传和图谱构建）
+ * Connect to an existing MindGraph knowledge graph (skip document upload and graph building)
  * @param {Object} data - { simulation_requirement?, project_name? }
  * @returns {Promise}
  */

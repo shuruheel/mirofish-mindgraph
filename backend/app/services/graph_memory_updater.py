@@ -1,6 +1,6 @@
 """
-图谱记忆更新服务
-将模拟中的Agent活动动态更新到MindGraph图谱中
+Graph memory update service
+Dynamically updates agent activities from simulations into the MindGraph graph
 """
 
 import os
@@ -21,7 +21,7 @@ logger = get_logger('mirofish.graph_memory_updater')
 
 @dataclass
 class AgentActivity:
-    """Agent活动记录"""
+    """Agent activity record"""
     platform: str           # twitter / reddit
     agent_id: int
     agent_name: str
@@ -32,10 +32,10 @@ class AgentActivity:
 
     def to_episode_text(self) -> str:
         """
-        将活动转换为文本描述
+        Convert activity to text description
 
-        采用自然语言描述格式，让MindGraph能够从中提取实体和关系
-        不添加模拟相关的前缀，避免误导图谱更新
+        Uses natural language description format so MindGraph can extract entities and relationships from it
+        No simulation-related prefixes added to avoid misleading graph updates
         """
         action_descriptions = {
             "CREATE_POST": self._describe_create_post,
@@ -55,46 +55,46 @@ class AgentActivity:
         describe_func = action_descriptions.get(self.action_type, self._describe_generic)
         description = describe_func()
 
-        return f"{self.agent_name}: {description}"
+        return f'{self.agent_name}: {description}'
 
     def _describe_create_post(self) -> str:
         content = self.action_args.get("content", "")
         if content:
-            return f"发布了一条帖子：「{content}」"
-        return "发布了一条帖子"
+            return f'published a post: "{content}"'
+        return "published a post"
 
     def _describe_like_post(self) -> str:
         post_content = self.action_args.get("post_content", "")
         post_author = self.action_args.get("post_author_name", "")
         if post_content and post_author:
-            return f"点赞了{post_author}的帖子：「{post_content}」"
+            return f"liked {post_author}'s post: \"{post_content}\""
         elif post_content:
-            return f"点赞了一条帖子：「{post_content}」"
+            return f'liked a post: "{post_content}"'
         elif post_author:
-            return f"点赞了{post_author}的一条帖子"
-        return "点赞了一条帖子"
+            return f"liked {post_author}'s post"
+        return "liked a post"
 
     def _describe_dislike_post(self) -> str:
         post_content = self.action_args.get("post_content", "")
         post_author = self.action_args.get("post_author_name", "")
         if post_content and post_author:
-            return f"踩了{post_author}的帖子：「{post_content}」"
+            return f"disliked {post_author}'s post: \"{post_content}\""
         elif post_content:
-            return f"踩了一条帖子：「{post_content}」"
+            return f'disliked a post: "{post_content}"'
         elif post_author:
-            return f"踩了{post_author}的一条帖子"
-        return "踩了一条帖子"
+            return f"disliked {post_author}'s post"
+        return "disliked a post"
 
     def _describe_repost(self) -> str:
         original_content = self.action_args.get("original_content", "")
         original_author = self.action_args.get("original_author_name", "")
         if original_content and original_author:
-            return f"转发了{original_author}的帖子：「{original_content}」"
+            return f"reposted {original_author}'s post: \"{original_content}\""
         elif original_content:
-            return f"转发了一条帖子：「{original_content}」"
+            return f'reposted a post: "{original_content}"'
         elif original_author:
-            return f"转发了{original_author}的一条帖子"
-        return "转发了一条帖子"
+            return f"reposted {original_author}'s post"
+        return "reposted a post"
 
     def _describe_quote_post(self) -> str:
         original_content = self.action_args.get("original_content", "")
@@ -102,22 +102,22 @@ class AgentActivity:
         quote_content = self.action_args.get("quote_content", "") or self.action_args.get("content", "")
         base = ""
         if original_content and original_author:
-            base = f"引用了{original_author}的帖子「{original_content}」"
+            base = f'quoted {original_author}\'s post: "{original_content}"'
         elif original_content:
-            base = f"引用了一条帖子「{original_content}」"
+            base = f'quoted a post: "{original_content}"'
         elif original_author:
-            base = f"引用了{original_author}的一条帖子"
+            base = f"quoted {original_author}'s post"
         else:
-            base = "引用了一条帖子"
+            base = "quoted a post"
         if quote_content:
-            base += f"，并评论道：「{quote_content}」"
+            base += f', and commented: "{quote_content}"'
         return base
 
     def _describe_follow(self) -> str:
         target_user_name = self.action_args.get("target_user_name", "")
         if target_user_name:
-            return f"关注了用户「{target_user_name}」"
-        return "关注了一个用户"
+            return f'followed user "{target_user_name}"'
+        return "followed a user"
 
     def _describe_create_comment(self) -> str:
         content = self.action_args.get("content", "")
@@ -125,82 +125,82 @@ class AgentActivity:
         post_author = self.action_args.get("post_author_name", "")
         if content:
             if post_content and post_author:
-                return f"在{post_author}的帖子「{post_content}」下评论道：「{content}」"
+                return f'on {post_author}\'s post "{post_content}" commented: "{content}"'
             elif post_content:
-                return f"在帖子「{post_content}」下评论道：「{content}」"
+                return f'on post "{post_content}" commented: "{content}"'
             elif post_author:
-                return f"在{post_author}的帖子下评论道：「{content}」"
-            return f"评论道：「{content}」"
-        return "发表了评论"
+                return f'on {post_author}\'s post commented: "{content}"'
+            return f'commented: "{content}"'
+        return "posted a comment"
 
     def _describe_like_comment(self) -> str:
         comment_content = self.action_args.get("comment_content", "")
         comment_author = self.action_args.get("comment_author_name", "")
         if comment_content and comment_author:
-            return f"点赞了{comment_author}的评论：「{comment_content}」"
+            return f"liked {comment_author}'s comment: \"{comment_content}\""
         elif comment_content:
-            return f"点赞了一条评论：「{comment_content}」"
+            return f'liked a comment: "{comment_content}"'
         elif comment_author:
-            return f"点赞了{comment_author}的一条评论"
-        return "点赞了一条评论"
+            return f"liked {comment_author}'s comment"
+        return "liked a comment"
 
     def _describe_dislike_comment(self) -> str:
         comment_content = self.action_args.get("comment_content", "")
         comment_author = self.action_args.get("comment_author_name", "")
         if comment_content and comment_author:
-            return f"踩了{comment_author}的评论：「{comment_content}」"
+            return f"disliked {comment_author}'s comment: \"{comment_content}\""
         elif comment_content:
-            return f"踩了一条评论：「{comment_content}」"
+            return f'disliked a comment: "{comment_content}"'
         elif comment_author:
-            return f"踩了{comment_author}的一条评论"
-        return "踩了一条评论"
+            return f"disliked {comment_author}'s comment"
+        return "disliked a comment"
 
     def _describe_search(self) -> str:
         query = self.action_args.get("query", "") or self.action_args.get("keyword", "")
-        return f"搜索了「{query}」" if query else "进行了搜索"
+        return f'searched for "{query}"' if query else "performed a search"
 
     def _describe_search_user(self) -> str:
         query = self.action_args.get("query", "") or self.action_args.get("username", "")
-        return f"搜索了用户「{query}」" if query else "搜索了用户"
+        return f'searched for user "{query}"' if query else "searched for a user"
 
     def _describe_mute(self) -> str:
         target_user_name = self.action_args.get("target_user_name", "")
         if target_user_name:
-            return f"屏蔽了用户「{target_user_name}」"
-        return "屏蔽了一个用户"
+            return f'muted user "{target_user_name}"'
+        return "muted a user"
 
     def _describe_generic(self) -> str:
-        return f"执行了{self.action_type}操作"
+        return f"performed {self.action_type} action"
 
 
 class GraphMemoryUpdater:
     """
-    图谱记忆更新器
+    Graph memory updater
 
-    监控模拟的actions日志文件，将新的agent活动实时更新到MindGraph图谱中。
-    按平台分组，每累积BATCH_SIZE条活动后批量发送到MindGraph。
+    Monitors simulation action log files and updates new agent activities to the MindGraph graph in real-time.
+    Groups by platform, batch-sending to MindGraph every BATCH_SIZE activities.
     """
 
     BATCH_SIZE = 5
     PLATFORM_DISPLAY_NAMES = {
-        'twitter': '世界1',
-        'reddit': '世界2',
+        'twitter': 'World 1',
+        'reddit': 'World 2',
     }
     SEND_INTERVAL = 0.5
 
-    # 内容性动作类型 — 发言/评论/引用 → 结构化声明(Claim)
+    # Content action types -- posts/comments/quotes -> structured claims (Claim)
     CONTENT_ACTIONS = {"CREATE_POST", "CREATE_COMMENT", "QUOTE_POST"}
-    # 最小内容长度，低于此阈值的不作为声明处理
+    # Minimum content length, below this threshold not treated as claims
     MIN_CLAIM_CONTENT_LENGTH = 20
-    # 高影响力动作阈值 — 超过此长度的内容动作额外记录为Decision
+    # High-impact action threshold -- content actions exceeding this length also recorded as Decision
     HIGH_IMPACT_CONTENT_LENGTH = 80
-    # 每批最多记录的决策数（避免API调用爆炸）
+    # Max decisions per batch (to avoid API call explosion)
     MAX_DECISIONS_PER_BATCH = 3
-    # 社交决策动作 — 记录为Decision
+    # Social decision actions -- recorded as Decision
     SOCIAL_DECISION_ACTIONS = {"FOLLOW", "MUTE"}
-    # 正面/负面标记词（用于简单异常检测）
-    POSITIVE_MARKERS = {"支持", "赞同", "好的", "同意", "正确", "很好", "不错", "认同"}
-    NEGATIVE_MARKERS = {"反对", "错误", "不同意", "反驳", "批评", "失败", "糟糕", "不行"}
+    # Positive/negative marker words (for simple anomaly detection)
+    POSITIVE_MARKERS = {"support", "agree", "good", "correct", "great", "approve", "endorse", "affirm"}
+    NEGATIVE_MARKERS = {"oppose", "wrong", "disagree", "refute", "criticize", "fail", "terrible", "reject"}
 
     def __init__(self, graph_id: str, minutes_per_round: int = 60,
                  agent_node_uids: Optional[Dict[str, str]] = None,
@@ -212,18 +212,18 @@ class GraphMemoryUpdater:
         self._simulation_dir = simulation_dir
 
         if not Config.MINDGRAPH_API_KEY:
-            raise ValueError("MINDGRAPH_API_KEY未配置")
+            raise ValueError("MINDGRAPH_API_KEY is not configured")
 
         self.client = MindGraphClient()
 
-        # Agent名称 → MindGraph Agent节点UID映射
-        # 用于在摄入后创建 Agent→提取节点 的AUTHORED边
+        # Agent name -> MindGraph Agent node UID mapping
+        # Used to create Agent->extracted node AUTHORED edges after ingestion
         self._agent_node_uids: Dict[str, str] = agent_node_uids or {}
 
-        # MindGraph会话（用于跟踪模拟生命周期）
+        # MindGraph session (for tracking simulation lifecycle)
         self._session_uid: Optional[str] = None
 
-        # 认知节点UID追踪（用于模拟后蒸馏，包括Claim/Question/Observation等）
+        # Cognitive node UID tracking (for post-simulation distillation, including Claim/Question/Observation etc.)
         self._created_epistemic_uids: List[str] = []
 
         self._activity_queue: Queue = Queue()
@@ -244,7 +244,7 @@ class GraphMemoryUpdater:
         self._failed_count = 0
         self._skipped_count = 0
 
-        logger.info(f"GraphMemoryUpdater 初始化完成: graph_id={graph_id}, source={source}, batch_size={self.BATCH_SIZE}")
+        logger.info(f"GraphMemoryUpdater initialized: graph_id={graph_id}, source={source}, batch_size={self.BATCH_SIZE}")
 
     def _get_platform_display_name(self, platform: str) -> str:
         return self.PLATFORM_DISPLAY_NAMES.get(platform.lower(), platform)
@@ -274,9 +274,9 @@ class GraphMemoryUpdater:
                 old_uid = f.read().strip()
             if old_uid:
                 self.client.close_session(old_uid, project_id=self.graph_id)
-                logger.info(f"已关闭孤立MindGraph会话: {old_uid}")
+                logger.info(f"Closed orphaned MindGraph session: {old_uid}")
         except Exception as e:
-            logger.debug(f"关闭孤立会话失败（可能已过期）: {e}")
+            logger.debug(f"Failed to close orphaned session (may have expired): {e}")
         finally:
             try:
                 os.remove(path)
@@ -290,16 +290,16 @@ class GraphMemoryUpdater:
         # Close any orphaned session from a previous run (e.g. after server restart)
         self._close_orphaned_session()
 
-        # 打开MindGraph会话 — 包裹整个模拟生命周期
+        # Open MindGraph session -- wraps the entire simulation lifecycle
         try:
             self._session_uid = self.client.open_session(
                 project_id=self.graph_id,
                 session_name=f"Simulation {self.graph_id}"
             )
             self._save_session_uid()
-            logger.info(f"MindGraph会话已打开: session_uid={self._session_uid}")
+            logger.info(f"MindGraph session opened: session_uid={self._session_uid}")
         except Exception as e:
-            logger.warning(f"打开MindGraph会话失败（将降级为纯文本摄入）: {e}")
+            logger.warning(f"Failed to open MindGraph session (will fall back to plain text ingestion): {e}")
             self._session_uid = None
 
         self._running = True
@@ -309,26 +309,26 @@ class GraphMemoryUpdater:
             name=f"GraphMemoryUpdater-{self.graph_id[:8]}"
         )
         self._worker_thread.start()
-        logger.info(f"GraphMemoryUpdater 已启动: graph_id={self.graph_id}")
+        logger.info(f"GraphMemoryUpdater started: graph_id={self.graph_id}")
 
     def stop(self):
         self._running = False
         self._flush_remaining()
 
-        # 模拟结束后蒸馏+模式检测
+        # Post-simulation distillation + pattern detection
         self._distill_simulation()
 
-        # 关闭MindGraph会话
+        # Close MindGraph session
         if self._session_uid:
             try:
                 self.client.close_session(self._session_uid, project_id=self.graph_id)
-                logger.info(f"MindGraph会话已关闭: session_uid={self._session_uid}")
+                logger.info(f"MindGraph session closed: session_uid={self._session_uid}")
             except Exception as e:
-                logger.warning(f"关闭MindGraph会话失败: {e}")
+                logger.warning(f"Failed to close MindGraph session: {e}")
 
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=10)
-        logger.info(f"GraphMemoryUpdater 已停止: graph_id={self.graph_id}, "
+        logger.info(f"GraphMemoryUpdater stopped: graph_id={self.graph_id}, "
                    f"total_activities={self._total_activities}, "
                    f"claims={self._total_claims}, traces={self._total_traces}, "
                    f"batches_sent={self._total_sent}, "
@@ -342,7 +342,7 @@ class GraphMemoryUpdater:
             return
         self._activity_queue.put(activity)
         self._total_activities += 1
-        logger.debug(f"添加活动到图谱队列: {activity.agent_name} - {activity.action_type}")
+        logger.debug(f"Adding activity to graph queue: {activity.agent_name} - {activity.action_type}")
 
     def add_activity_from_dict(self, data: Dict[str, Any], platform: str):
         if "event_type" in data:
@@ -376,11 +376,11 @@ class GraphMemoryUpdater:
                 except Empty:
                     pass
             except Exception as e:
-                logger.error(f"工作循环异常: {e}")
+                logger.error(f"Worker loop exception: {e}")
                 time.sleep(1)
 
     def _get_content(self, activity: AgentActivity) -> str:
-        """提取活动的核心文本内容"""
+        """Extract core text content from activity"""
         args = activity.action_args
         if activity.action_type == "CREATE_POST":
             return args.get("content", "")
@@ -392,12 +392,12 @@ class GraphMemoryUpdater:
 
     def _send_batch_activities(self, activities: List[AgentActivity], platform: str):
         """
-        批量发送活动到MindGraph图谱
+        Batch-send activities to MindGraph graph
 
-        结构化写入策略：
-        - 内容性动作(CREATE_POST/COMMENT/QUOTE) → Journal节点（Memory层）
-        - 社交动作(LIKE/FOLLOW/REPOST等) → Trace条目（Memory层）
-        - 高影响力决策(FOLLOW/MUTE) → Decision/Option节点（Intent层）
+        Structured write strategy:
+        - Content actions (CREATE_POST/COMMENT/QUOTE) -> Journal nodes (Memory layer)
+        - Social actions (LIKE/FOLLOW/REPOST etc.) -> Trace entries (Memory layer)
+        - High-impact decisions (FOLLOW/MUTE) -> Decision/Option nodes (Intent layer)
         """
         if not activities:
             return
@@ -415,7 +415,7 @@ class GraphMemoryUpdater:
             try:
                 content = self._get_content(activity)
 
-                # 内容性动作 → Journal节点（Memory层，无认知提取）
+                # Content actions -> Journal nodes (Memory layer, no cognitive extraction)
                 if (activity.action_type in self.CONTENT_ACTIONS
                         and len(content) >= self.MIN_CLAIM_CONTENT_LENGTH):
 
@@ -435,35 +435,35 @@ class GraphMemoryUpdater:
                     if journal_uid and agent_uid:
                         pending_links.append((agent_uid, journal_uid))
                     elif not journal_uid:
-                        logger.warning(f"Journal创建无UID返回: {activity.agent_name}")
+                        logger.warning(f"Journal creation returned no UID: {activity.agent_name}")
                     elif not agent_uid:
-                        logger.warning(f"Agent节点UID未找到: '{activity.agent_name}' (已注册: {len(self._agent_node_uids)}个)")
+                        logger.warning(f"Agent node UID not found: '{activity.agent_name}' (registered: {len(self._agent_node_uids)})")
 
                     journals_sent += 1
                     self._total_claims += 1
 
-                    # 异常检测：Agent行为是否与立场矛盾
+                    # Anomaly detection: Check if agent behavior contradicts stance
                     self._check_anomaly(activity, content)
-                    # 高影响力决策记录（rate-limited）
+                    # High-impact decision recording (rate-limited)
                     if decisions_in_batch < self.MAX_DECISIONS_PER_BATCH:
                         if self._record_decision(activity, content):
                             decisions_in_batch += 1
                 else:
-                    # 社交决策记录（FOLLOW/MUTE, rate-limited）
+                    # Social decision recording (FOLLOW/MUTE, rate-limited)
                     if (activity.action_type in self.SOCIAL_DECISION_ACTIONS
                             and decisions_in_batch < self.MAX_DECISIONS_PER_BATCH):
                         if self._record_decision(activity, ""):
                             decisions_in_batch += 1
-                    # 社交动作 → 收集为trace文本
+                    # Social actions -> collect as trace text
                     trace_texts.append(activity.to_episode_text())
 
             except Exception as e:
-                logger.warning(f"结构化写入失败，降级为trace: {activity.agent_name} {activity.action_type}: {e}")
+                logger.warning(f"Structured write failed, falling back to trace: {activity.agent_name} {activity.action_type}: {e}")
                 trace_texts.append(activity.to_episode_text())
 
         # Batch create Agent → Journal links (single API call)
         if pending_links:
-            logger.info(f"创建 {len(pending_links)} 条 AUTHORED 边")
+            logger.info(f"Creating {len(pending_links)}  AUTHORED edges")
             try:
                 batch_edges = [
                     {"from_uid": from_uid, "to_uid": to_uid, "edge_type": "AUTHORED"}
@@ -484,7 +484,7 @@ class GraphMemoryUpdater:
                     except Exception as link_err:
                         logger.warning(f"Individual AUTHORED edge failed: {from_uid} -> {to_uid}: {link_err}")
 
-        # 批量写入trace条目
+        # Batch-write trace entries
         if trace_texts:
             combined_trace = "\n".join(trace_texts)
             try:
@@ -496,7 +496,7 @@ class GraphMemoryUpdater:
                         trace_type="simulation_activity"
                     )
                 else:
-                    # 降级：无会话时直接创建Journal
+                    # Fallback: create Journal directly when no session
                     self.client.create_journal(
                         content=combined_trace,
                         project_id=self.graph_id,
@@ -505,16 +505,16 @@ class GraphMemoryUpdater:
                 traces_sent = len(trace_texts)
                 self._total_traces += traces_sent
             except Exception as e:
-                logger.error(f"trace写入失败: {e}")
+                logger.error(f"Trace write failed: {e}")
                 self._failed_count += 1
 
         self._total_sent += 1
         self._total_items_sent += len(activities)
         queue_remaining = self._activity_queue.qsize()
         logger.info(
-            f"成功发送 {len(activities)} 条{display_name}活动 "
+            f"Successfully sent {len(activities)} {display_name}activities "
             f"(journals={journals_sent}, traces={traces_sent}, decisions={decisions_in_batch}) "
-            f"到图谱 {self.graph_id} [queue={queue_remaining}]"
+            f"to graph {self.graph_id} [queue={queue_remaining}]"
         )
 
     def _flush_remaining(self):
@@ -533,21 +533,21 @@ class GraphMemoryUpdater:
             for platform, buffer in self._platform_buffers.items():
                 if buffer:
                     display_name = self._get_platform_display_name(platform)
-                    logger.info(f"发送{display_name}平台剩余的 {len(buffer)} 条活动")
+                    logger.info(f"Sending {display_name}platform remaining {len(buffer)} activities")
                     self._send_batch_activities(buffer, platform)
             for platform in self._platform_buffers:
                 self._platform_buffers[platform] = []
 
     # ═══════════════════════════════════════
-    # Agent→节点 边创建
+    # Agent->Node edge creation
     # ═══════════════════════════════════════
 
     def _link_agent_to_nodes(self, agent_uid: str, target_uids: List[str],
                              edge_type: str):
         """
-        创建Agent节点到目标节点的边（batch API优先）
+        Create edges from Agent node to target nodes (batch API preferred)
 
-        使用batch_create一次创建所有边，失败时回退到逐条创建。
+        Uses batch_create to create all edges at once, falls back to individual creation on failure.
         """
         if not target_uids:
             return
@@ -558,7 +558,7 @@ class GraphMemoryUpdater:
         try:
             self.client.batch_create(edges=batch_edges)
         except Exception as e:
-            logger.debug(f"批量创建{edge_type}边失败，回退逐条: {e}")
+            logger.debug(f"Batch creating {edge_type} edges failed, falling back to individual: {e}")
             for uid in target_uids:
                 try:
                     self.client.add_link(
@@ -569,12 +569,12 @@ class GraphMemoryUpdater:
                     pass
 
     # ═══════════════════════════════════════
-    # 轮间衰减 + 模拟后蒸馏 + 异常检测 + 决策记录
+    # Inter-round decay + post-simulation distillation + anomaly detection + decision recording
     # ═══════════════════════════════════════
 
     def decay_round(self, round_num: int):
         """
-        轮间显著度衰减 — 模拟记忆的自然遗忘
+        Inter-round salience decay -- natural forgetting of simulation memory
 
         DISABLED: decay() is a global operation that degrades salience across
         the entire MindGraph graph (book knowledge + simulation data), not
@@ -582,13 +582,13 @@ class GraphMemoryUpdater:
         graph context provider. Simulations are short-lived; natural recency
         bias in retrieval handles salience implicitly.
         """
-        logger.debug(f"跳过轮间衰减 (全局操作已禁用): round={round_num}")
+        logger.debug(f"Skipping inter-round decay (global operation disabled): round={round_num}")
 
     def record_round_end(self, round_num: int, platform: str,
                          actions_count: int = 0):
-        """记录轮次结束为Observation节点（via batch API）"""
+        """Record round end as Observation node (via batch API)"""
         display_name = self._get_platform_display_name(platform)
-        content = f"第{round_num}轮{display_name}模拟完成，共{actions_count}个动作"
+        content = f"Round {round_num}{display_name} simulation completed, {actions_count} actions"
         try:
             self.client.batch_create(nodes=[{
                 "label": content[:100],
@@ -600,13 +600,13 @@ class GraphMemoryUpdater:
                 "agent_id": self.graph_id,
             }])
         except Exception as e:
-            logger.debug(f"记录轮次观察失败: {e}")
+            logger.debug(f"Failed to record round observation: {e}")
 
     def _check_anomaly(self, activity: AgentActivity, content: str):
         """
-        检测Agent行为是否与其配置立场矛盾
+        Detect if agent behavior contradicts its configured stance
 
-        简单启发式：如果opposing agent发正面内容或supportive agent发负面内容
+        Simple heuristic: if opposing agent posts positive content or supportive agent posts negative content
         """
         stance = activity.action_args.get("stance", "neutral")
         sentiment = activity.action_args.get("sentiment_bias", 0.0)
@@ -628,24 +628,24 @@ class GraphMemoryUpdater:
                 anomaly_result = self.client.record_anomaly(
                     description=(
                         f"{activity.agent_name} (stance={stance}, sentiment={sentiment}) "
-                        f"发表了与立场不一致的内容: {content[:100]}"
+                        f"posted content inconsistent with stance: {content[:100]}"
                     ),
                     project_id=self.graph_id,
                     severity="medium",
                     agent_name=activity.agent_name,
                 )
-                logger.info(f"检测到行为异常: {activity.agent_name} ({stance})")
-                # 链接 Agent → Anomaly
+                logger.info(f"Behavioral anomaly detected: {activity.agent_name} ({stance})")
+                # Link Agent -> Anomaly
                 agent_uid = self._agent_node_uids.get(activity.agent_name)
                 anomaly_uid = anomaly_result.get("uid", "") if isinstance(anomaly_result, dict) else ""
                 if agent_uid and anomaly_uid:
                     self._link_agent_to_nodes(agent_uid, [anomaly_uid], "EXHIBITED")
             except Exception as e:
-                logger.debug(f"记录异常失败: {e}")
+                logger.debug(f"Failed to record anomaly: {e}")
 
     def _record_decision(self, activity: AgentActivity, content: str) -> bool:
         """
-        将高影响力动作记录为Decision节点
+        Record high-impact action as Decision node
 
         Uses batch API to create Decision + Option nodes in a single call,
         then links Agent→Decision via batch edges.
@@ -697,7 +697,7 @@ class GraphMemoryUpdater:
                             pass
                 return True
             except Exception as e:
-                logger.debug(f"记录决策失败: {e}")
+                logger.debug(f"Failed to record decision: {e}")
                 return False
 
         elif activity.action_type in self.SOCIAL_DECISION_ACTIONS:
@@ -726,50 +726,50 @@ class GraphMemoryUpdater:
                         pass
                 return True
             except Exception as e:
-                logger.debug(f"记录社交决策失败: {e}")
+                logger.debug(f"Failed to record social decision: {e}")
                 return False
 
         return False
 
     def _distill_simulation(self):
         """
-        模拟结束后蒸馏 — 创建Summary节点 + 检测涌现模式
+        Post-simulation distillation -- create Summary node + detect emergent patterns
 
-        在stop()中关闭会话前调用。
+        Called before closing session in stop().
         """
         if not self._created_epistemic_uids:
-            logger.info("无Claim节点，跳过蒸馏")
+            logger.info("No Claim nodes, skipping distillation")
             return
 
-        # 蒸馏：将所有Claim汇总为Summary
+        # Distillation: summarize all Claims into Summary
         try:
             self.client.distill(
                 label=f"Simulation Summary: {self.graph_id}",
-                source_uids=self._created_epistemic_uids[:50],  # 限制UID数量
+                source_uids=self._created_epistemic_uids[:50],  # Limit UID count
                 project_id=self.graph_id,
-                content=f"基于{len(self._created_epistemic_uids)}个Agent声明的自动蒸馏摘要",
+                content=f"Based on {len(self._created_epistemic_uids)} agent claims auto-distillation summary",
             )
-            logger.info(f"模拟蒸馏完成: {len(self._created_epistemic_uids)} claims → summary")
+            logger.info(f"Simulation distillation completed: {len(self._created_epistemic_uids)} claims → summary")
         except Exception as e:
-            logger.warning(f"模拟蒸馏失败: {e}")
+            logger.warning(f"Simulation distillation failed: {e}")
 
-        # 简单模式检测
+        # Simple pattern detection
         if self._total_claims > 5:
-            # 高不确定性模式：大多数claims置信度低
-            # (需要追踪置信度，这里用总数做粗略估计)
+            # High uncertainty pattern: most claims have low confidence
+            # (Need to track confidence, using total count for rough estimate)
             try:
                 self.client.record_pattern(
-                    name="模拟活动模式",
+                    name="Simulation activity pattern",
                     description=(
-                        f"本次模拟共产生{self._total_claims}个结构化声明, "
-                        f"{self._total_traces}个社交追踪, "
-                        f"{self._total_activities}个总活动"
+                        f"This simulation produced {self._total_claims} structured claims, "
+                        f"{self._total_traces} social traces, "
+                        f"{self._total_activities} total activities"
                     ),
                     project_id=self.graph_id,
                     instance_count=self._total_claims,
                 )
             except Exception as e:
-                logger.debug(f"记录模式失败: {e}")
+                logger.debug(f"Failed to record pattern: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         with self._buffer_lock:
@@ -789,7 +789,7 @@ class GraphMemoryUpdater:
 
 
 class GraphMemoryManager:
-    """管理多个模拟的图谱记忆更新器"""
+    """Manage graph memory updaters for multiple simulations"""
 
     _updaters: Dict[str, GraphMemoryUpdater] = {}
     _lock = threading.Lock()
@@ -813,7 +813,7 @@ class GraphMemoryManager:
             updater.start()
             cls._updaters[simulation_id] = updater
             logger.info(
-                f"创建图谱记忆更新器: simulation_id={simulation_id}, "
+                f"CreatingGraph memory updater: simulation_id={simulation_id}, "
                 f"graph_id={graph_id}, source={source}, agent_nodes={len(agent_node_uids or {})}"
             )
             return updater
@@ -828,7 +828,7 @@ class GraphMemoryManager:
             if simulation_id in cls._updaters:
                 cls._updaters[simulation_id].stop()
                 del cls._updaters[simulation_id]
-                logger.info(f"已停止图谱记忆更新器: simulation_id={simulation_id}")
+                logger.info(f"Stopped graph memory updater: simulation_id={simulation_id}")
 
     _stop_all_done = False
 
@@ -843,9 +843,9 @@ class GraphMemoryManager:
                     try:
                         updater.stop()
                     except Exception as e:
-                        logger.error(f"停止更新器失败: simulation_id={simulation_id}, error={e}")
+                        logger.error(f"Failed to stop updater: simulation_id={simulation_id}, error={e}")
                 cls._updaters.clear()
-            logger.info("已停止所有图谱记忆更新器")
+            logger.info("Stopped all graph memory updaters")
 
     @classmethod
     def get_all_stats(cls) -> Dict[str, Dict[str, Any]]:

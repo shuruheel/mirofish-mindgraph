@@ -84,7 +84,7 @@ def run_tests():
     # 2a. ingest_chunk (sync)
     try:
         result = api("POST", "/ingest/chunk", json_body={
-            "content": "北京市最近出台了新的租房政策，要求房东必须在住房租赁平台上登记所有出租房源。这一政策旨在规范租赁市场，保护租户权益。",
+            "content": "Beijing recently introduced a new rental housing policy requiring landlords to register all rental listings on the housing rental platform. This policy aims to regulate the rental market and protect tenants' rights.",
             "agent_id": PROJECT_ID,
             "layers": ["reality", "epistemic"],
             "label": "[TestAgent] R1",
@@ -105,10 +105,10 @@ def run_tests():
     # 2b. ingest_agent_post (simulated — same as above with agent name prefix)
     try:
         result = api("POST", "/ingest/chunk", json_body={
-            "content": "张明: 我认为这个新的租房政策对租户来说是好事，可以减少黑中介的问题。",
+            "content": "Zhang Ming: I think this new rental policy is good for tenants, it can reduce the problem of unlicensed agents.",
             "agent_id": PROJECT_ID,
             "layers": ["reality", "epistemic"],
-            "label": "[张明] twitter R1",
+            "label": "[Zhang Ming] twitter R1",
             "chunk_type": "agent_post",
         })
         assert isinstance(result, dict)
@@ -122,7 +122,7 @@ def run_tests():
     # 2c. ingest_document (async)
     try:
         result = api("POST", "/ingest/document", json_body={
-            "content": "这是一份关于租房市场调研的长文档。" * 50,
+            "content": "This is a long document about rental market research. " * 50,
             "agent_id": PROJECT_ID,
             "source_name": "test_document.txt",
             "layers": ["reality", "epistemic"],
@@ -142,7 +142,7 @@ def run_tests():
         try:
             result = api("POST", "/retrieve", json_body={
                 "action": action,
-                "query": "租房政策",
+                "query": "rental policy",
                 "limit": 5,
                 "agent_id": PROJECT_ID,
             })
@@ -154,7 +154,7 @@ def run_tests():
     # retrieve_context (RAG)
     try:
         result = api("POST", "/retrieve/context", json_body={
-            "query": "租房政策影响",
+            "query": "rental policy impact",
             "k": 3,
             "depth": 1,
             "agent_id": PROJECT_ID,
@@ -245,8 +245,8 @@ def run_tests():
     try:
         result = api("POST", "/reality/entity", json_body={
             "action": "create",
-            "label": "北京市住建局",
-            "props": {"entity_type": "Organization", "description": "负责北京市住房建设的政府部门", "role": "regulator"},
+            "label": "Beijing Housing and Construction Bureau",
+            "props": {"entity_type": "Organization", "description": "Government department responsible for housing construction in Beijing", "role": "regulator"},
             "agent_id": PROJECT_ID,
         })
         entity_uid = result.get("uid", "")
@@ -259,7 +259,7 @@ def run_tests():
         try:
             result = api("POST", "/reality/entity", json_body={
                 "action": "resolve",
-                "label": "北京市住建局",
+                "label": "Beijing Housing and Construction Bureau",
                 "agent_id": PROJECT_ID,
             })
             r.ok("resolve_entity", f"uid={result.get('uid', 'N/A')[:16]}")
@@ -269,7 +269,7 @@ def run_tests():
         try:
             result = api("POST", "/reality/entity", json_body={
                 "action": "fuzzy_resolve",
-                "label": "住建局",
+                "label": "Housing Bureau",
                 "limit": 3,
                 "agent_id": PROJECT_ID,
             })
@@ -299,9 +299,9 @@ def run_tests():
     try:
         result = api("POST", "/epistemic/inquiry", json_body={
             "action": "hypothesis",
-            "label": "新租房政策将在6个月内使黑中介减少30%",
+            "label": "The new rental policy will reduce unlicensed agents by 30% within 6 months",
             "confidence": 0.5,
-            "props": {"statement": "新租房政策将在6个月内使黑中介减少30%", "hypothesis_type": "predictive", "status": "proposed"},
+            "props": {"statement": "The new rental policy will reduce unlicensed agents by 30% within 6 months", "hypothesis_type": "predictive", "status": "proposed"},
             "agent_id": PROJECT_ID,
         })
         hypothesis_uid = result.get("uid", "")
@@ -313,11 +313,11 @@ def run_tests():
     try:
         result = api("POST", "/epistemic/argument", json_body={
             "claim": {
-                "label": "租赁平台登记制度已在深圳成功实施",
+                "label": "The rental platform registration system has been successfully implemented in Shenzhen",
                 "confidence": 0.7,
-                "props": {"content": "租赁平台登记制度已在深圳成功实施", "claim_type": "evidence_based", "proposed_by": "李教授"},
+                "props": {"content": "The rental platform registration system has been successfully implemented in Shenzhen", "claim_type": "evidence_based", "proposed_by": "Professor Li"},
             },
-            "evidence": [{"label": "深圳2023数据", "props": {"description": "黑中介投诉下降40%", "evidence_type": "referenced_content"}}],
+            "evidence": [{"label": "Shenzhen 2023 data", "props": {"description": "Unlicensed agent complaints decreased by 40%", "evidence_type": "referenced_content"}}],
             "agent_id": PROJECT_ID,
         })
         r.ok("add_claim (with evidence)", f"keys={list(result.keys())[:5]}")
@@ -328,8 +328,8 @@ def run_tests():
     try:
         result = api("POST", "/epistemic/inquiry", json_body={
             "action": "anomaly",
-            "label": "[异常] 张明: 行为不一致",
-            "props": {"description": "张明 (opposing) 发表支持性内容", "anomaly_type": "behavioral_inconsistency", "severity": "medium"},
+            "label": "[Anomaly] Zhang Ming: behavioral inconsistency",
+            "props": {"description": "Zhang Ming (opposing) posted supportive content", "anomaly_type": "behavioral_inconsistency", "severity": "medium"},
             "agent_id": PROJECT_ID,
         })
         anomaly_uid = result.get("uid", "")
@@ -341,8 +341,8 @@ def run_tests():
     try:
         result = api("POST", "/epistemic/structure", json_body={
             "action": "pattern",
-            "label": "回声室效应",
-            "props": {"name": "回声室效应", "description": "支持派互相转发率85%", "pattern_type": "emergent", "instance_count": 42},
+            "label": "Echo chamber effect",
+            "props": {"name": "Echo chamber effect", "description": "Supporters have an 85% mutual repost rate", "pattern_type": "emergent", "instance_count": 42},
             "agent_id": PROJECT_ID,
         })
         r.ok("record_pattern", f"keys={list(result.keys())[:5]}")
@@ -356,8 +356,8 @@ def run_tests():
     try:
         result = api("POST", "/intent/commitment", json_body={
             "action": "goal",
-            "label": "张明: opposing stance",
-            "props": {"description": "Agent张明 has opposing stance", "priority": "high", "goal_type": "social", "status": "active"},
+            "label": "Zhang Ming: opposing stance",
+            "props": {"description": "Agent Zhang Ming has opposing stance", "priority": "high", "goal_type": "social", "status": "active"},
             "agent_id": PROJECT_ID,
         })
         goal_uid = result.get("uid", "")
@@ -371,8 +371,8 @@ def run_tests():
         # Step 1: open_decision
         result = api("POST", "/intent/deliberation", json_body={
             "action": "open_decision",
-            "label": "张明 decided to comment",
-            "props": {"description": "张明 decided to publicly comment on housing policy"},
+            "label": "Zhang Ming decided to comment",
+            "props": {"description": "Zhang Ming decided to publicly comment on housing policy"},
             "agent_id": PROJECT_ID,
         })
         decision_uid = result.get("uid", "")
@@ -383,8 +383,8 @@ def run_tests():
             api("POST", "/intent/deliberation", json_body={
                 "action": "add_option",
                 "decision_uid": decision_uid,
-                "label": "发表反对帖子",
-                "props": {"description": "发表一篇反对新政策的帖子"},
+                "label": "Post an opposing article",
+                "props": {"description": "Post an article opposing the new policy"},
                 "agent_id": PROJECT_ID,
             })
             r.ok("record_decision step2 (add_option)", "")
@@ -422,8 +422,8 @@ def run_tests():
             result = api("POST", "/memory/session", json_body={
                 "action": "trace",
                 "session_uid": session_uid,
-                "label": "社交活动记录",
-                "props": {"content": "张明: 点赞了李教授的帖子\n王芳: 转发了张明的帖子", "trace_type": "simulation_activity"},
+                "label": "Social activity record",
+                "props": {"content": "Zhang Ming: liked Professor Li's post\nWang Fang: reposted Zhang Ming's post", "trace_type": "simulation_activity"},
                 "agent_id": PROJECT_ID,
             })
             r.ok("trace_session", f"keys={list(result.keys())[:5]}")
@@ -447,7 +447,7 @@ def run_tests():
             result = api("POST", "/memory/distill", json_body={
                 "label": "Test Simulation Summary",
                 "summarizes_uids": source_uids,
-                "props": {"content": "基于测试节点的蒸馏摘要"},
+                "props": {"content": "Distilled summary based on test nodes"},
                 "agent_id": PROJECT_ID,
             })
             r.ok("distill", f"keys={list(result.keys())[:5]}")
@@ -464,7 +464,7 @@ def run_tests():
     try:
         result = api("POST", "/action/execution", json_body={
             "action": "register_agent",
-            "label": "张明",
+            "label": "Zhang Ming",
             "summary": "Person: opposing stance, sentiment=-0.5",
             "props": {"entity_type": "Person", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
             "agent_id": PROJECT_ID,
@@ -478,7 +478,7 @@ def run_tests():
         print("    Trying fallback: POST /node with node_type=Agent ...")
         try:
             result = api("POST", "/node", json_body={
-                "label": "张明",
+                "label": "Zhang Ming",
                 "node_type": "Agent",
                 "props": {"entity_type": "Person", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
                 "agent_id": PROJECT_ID,
@@ -493,7 +493,7 @@ def run_tests():
             try:
                 result = api("POST", "/reality/entity", json_body={
                     "action": "create",
-                    "label": "张明 (Agent)",
+                    "label": "Zhang Ming (Agent)",
                     "props": {"entity_type": "Agent", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
                     "agent_id": PROJECT_ID,
                 })
@@ -596,8 +596,8 @@ def run_tests():
     try:
         result = api("POST", "/reality/capture", json_body={
             "action": "observation",
-            "label": "第3轮世界1模拟完成",
-            "props": {"content": "第3轮世界1模拟完成，共42个动作", "observation_type": "simulation_event"},
+            "label": "Round 3 World 1 simulation completed",
+            "props": {"content": "Round 3 World 1 simulation completed, 42 actions total", "observation_type": "simulation_event"},
             "agent_id": PROJECT_ID,
         })
         r.ok("capture_observation", f"uid={result.get('uid', 'N/A')[:16]}")

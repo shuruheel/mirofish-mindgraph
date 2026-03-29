@@ -1,35 +1,35 @@
 <template>
   <div class="home-container">
-    <!-- 顶部导航栏 -->
+    <!-- Top Navigation Bar -->
     <nav class="navbar">
       <div class="nav-brand">MIROFISH</div>
       <div class="nav-links">
         <a href="https://github.com/666ghj/MiroFish" target="_blank" class="github-link">
-          访问我们的Github主页 <span class="arrow">↗</span>
+          Visit us on GitHub <span class="arrow">↗</span>
         </a>
       </div>
     </nav>
 
     <div class="main-content">
-      <!-- 上半部分：Hero 区域 -->
+      <!-- Upper Section: Hero Area -->
       <section class="hero-section">
         <div class="hero-left">
           <div class="tag-row">
-            <span class="orange-tag">简洁通用的群体智能引擎</span>
-            <span class="version-text">/ v0.1-预览版</span>
+            <span class="orange-tag">A Versatile Swarm Intelligence Engine</span>
+            <span class="version-text">/ v0.1-preview</span>
           </div>
           
           <h1 class="main-title">
-            连接知识图谱<br>
-            <span class="gradient-text">即刻推演未来</span>
+            Connect a Knowledge Graph<br>
+            <span class="gradient-text">Simulate the Future Now</span>
           </h1>
           
           <div class="hero-desc">
             <p>
-              即使只有一段文字，<span class="highlight-bold">MiroFish</span> 也能基于其中的现实种子，全自动生成与之对应的至多<span class="highlight-orange">百万级Agent</span>构成的平行世界。通过上帝视角注入变量，在复杂的群体交互中寻找动态环境下的<span class="highlight-code">“局部最优解”</span>
+              Even from a single piece of text, <span class=”highlight-bold”>MiroFish</span> can extract Reality Seeds and automatically generate a parallel world of up to <span class=”highlight-orange”>millions of Agents</span>. Inject variables from a god's-eye view to find the <span class=”highlight-code”>”local optimum”</span> in complex group interactions within dynamic environments.
             </p>
-            <p class="slogan-text">
-              让未来在 Agent 群中预演，让决策在百战后胜出<span class="blinking-cursor">_</span>
+            <p class=”slogan-text”>
+              Let the future rehearse among Agents; let decisions prevail after a thousand battles<span class=”blinking-cursor”>_</span>
             </p>
           </div>
            
@@ -37,7 +37,7 @@
         </div>
         
         <div class="hero-right">
-          <!-- Logo 区域 -->
+          <!-- Logo Area -->
           <div class="logo-container">
             <img src="../assets/logo/MiroFish_logo_left.jpeg" alt="MiroFish Logo" class="hero-logo" />
           </div>
@@ -48,80 +48,80 @@
         </div>
       </section>
 
-      <!-- 下半部分：双栏布局 -->
+      <!-- Lower Section: Two-Column Layout -->
       <section class="dashboard-section">
-        <!-- 左栏：状态与步骤 -->
+        <!-- Left Column: Status & Steps -->
         <div class="left-panel">
           <div class="panel-header">
-            <span class="status-dot">■</span> 系统状态
+            <span class="status-dot">■</span> System Status
           </div>
           
-          <h2 class="section-title">准备就绪</h2>
+          <h2 class="section-title">Ready</h2>
           <p class="section-desc">
-            预测引擎待命中，可上传多份非结构化数据以初始化模拟序列
+            Prediction engine on standby. Upload unstructured data to initialize a simulation sequence.
           </p>
           
-          <!-- 数据指标卡片 -->
+          <!-- Metrics Cards -->
           <div class="metrics-row">
             <div class="metric-card">
-              <div class="metric-value">低成本</div>
-              <div class="metric-label">常规模拟平均5$/次</div>
+              <div class="metric-value">Low Cost</div>
+              <div class="metric-label">~$5 per standard simulation</div>
             </div>
             <div class="metric-card">
-              <div class="metric-value">高可用</div>
-              <div class="metric-label">最多百万级Agent模拟</div>
+              <div class="metric-value">Scalable</div>
+              <div class="metric-label">Up to millions of Agents</div>
             </div>
           </div>
 
-          <!-- 项目模拟步骤介绍 (新增区域) -->
+          <!-- Simulation Workflow Steps -->
           <div class="steps-container">
             <div class="steps-header">
-               <span class="diamond-icon">◇</span> 工作流序列
+               <span class="diamond-icon">◇</span> Workflow Sequence
             </div>
             <div class="workflow-list">
               <div class="workflow-item">
                 <span class="step-num">01</span>
                 <div class="step-info">
-                  <div class="step-title">知识图谱</div>
-                  <div class="step-desc">连接已有MindGraph图谱或上传文档自动构建 & GraphRAG</div>
+                  <div class="step-title">Knowledge Graph</div>
+                  <div class="step-desc">Connect an existing MindGraph or upload documents for auto-construction & GraphRAG</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">02</span>
                 <div class="step-info">
-                  <div class="step-title">环境搭建</div>
-                  <div class="step-desc">实体关系抽取 & 人设生成 & 环境配置Agent注入仿真参数</div>
+                  <div class="step-title">Environment Setup</div>
+                  <div class="step-desc">Entity-relation extraction & persona generation & Agent injection with simulation parameters</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">03</span>
                 <div class="step-info">
-                  <div class="step-title">开始模拟</div>
-                  <div class="step-desc">双平台并行模拟 & 自动解析预测需求 & 动态更新时序记忆</div>
+                  <div class="step-title">Run Simulation</div>
+                  <div class="step-desc">Dual-platform parallel simulation & auto-parsed prediction goals & dynamic temporal memory updates</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">04</span>
                 <div class="step-info">
-                  <div class="step-title">报告生成</div>
-                  <div class="step-desc">ReportAgent拥有丰富的工具集与模拟后环境进行深度交互</div>
+                  <div class="step-title">Report Generation</div>
+                  <div class="step-desc">ReportAgent uses a rich toolset to deeply interact with the post-simulation environment</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">05</span>
                 <div class="step-info">
-                  <div class="step-title">深度互动</div>
-                  <div class="step-desc">与模拟世界中的任意一位进行对话 & 与ReportAgent进行对话</div>
+                  <div class="step-title">Deep Interaction</div>
+                  <div class="step-desc">Chat with any Agent in the simulated world & converse with the ReportAgent</div>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 右栏：交互控制台 -->
+        <!-- Right Column: Interactive Console -->
         <div class="right-panel">
           <div class="console-box">
-            <!-- 模式切换 -->
+            <!-- Mode Switcher -->
             <div class="console-section mode-section">
               <div class="mode-switcher">
                 <button
@@ -129,23 +129,23 @@
                   :class="{ active: mode === 'upload' }"
                   @click="mode = 'upload'"
                 >
-                  上传文档
+                  Upload Documents
                 </button>
                 <button
                   class="mode-btn"
                   :class="{ active: mode === 'connect' }"
                   @click="mode = 'connect'"
                 >
-                  连接 MindGraph
+                  Connect MindGraph
                 </button>
               </div>
             </div>
 
-            <!-- 上传区域 (仅上传模式) -->
+            <!-- Upload Area (upload mode only) -->
             <div v-if="mode === 'upload'" class="console-section">
               <div class="console-header">
-                <span class="console-label">01 / 现实种子</span>
-                <span class="console-meta">支持格式: PDF, MD, TXT</span>
+                <span class="console-label">01 / Reality Seeds</span>
+                <span class="console-meta">Supported formats: PDF, MD, TXT</span>
               </div>
 
               <div
@@ -168,8 +168,8 @@
 
                 <div v-if="files.length === 0" class="upload-placeholder">
                   <div class="upload-icon">↑</div>
-                  <div class="upload-title">拖拽文件上传</div>
-                  <div class="upload-hint">或点击浏览文件系统</div>
+                  <div class="upload-title">Drag & drop files here</div>
+                  <div class="upload-hint">or click to browse</div>
                 </div>
 
                 <div v-else class="file-list">
@@ -182,53 +182,53 @@
               </div>
             </div>
 
-            <!-- 连接 MindGraph 说明 (仅连接模式) -->
+            <!-- Connect MindGraph Info (connect mode only) -->
             <div v-if="mode === 'connect'" class="console-section">
               <div class="console-header">
-                <span class="console-label">01 / 已有知识图谱</span>
+                <span class="console-label">01 / Existing Knowledge Graph</span>
                 <span class="console-meta">MindGraph Cloud</span>
               </div>
               <div class="connect-info">
                 <div class="connect-icon">&#x26A1;</div>
                 <div class="connect-text">
-                  <div class="connect-title">直接连接已有 MindGraph 知识图谱</div>
-                  <div class="connect-desc">跳过文档上传和图谱构建，直接从已有知识图谱中提取实体并生成模拟Agent</div>
+                  <div class="connect-title">Connect to an existing MindGraph Knowledge Graph</div>
+                  <div class="connect-desc">Skip document upload and graph construction -- extract entities directly from an existing graph to generate simulation Agents</div>
                 </div>
               </div>
             </div>
 
-            <!-- 分割线 -->
+            <!-- Divider -->
             <div class="console-divider">
-              <span>输入参数</span>
+              <span>Input Parameters</span>
             </div>
 
-            <!-- 输入区域 -->
+            <!-- Input Area -->
             <div class="console-section">
               <div class="console-header">
-                <span class="console-label">>_ 02 / 模拟提示词</span>
-                <span v-if="mode === 'connect'" class="console-meta">可选</span>
+                <span class="console-label">>_ 02 / Simulation Prompt</span>
+                <span v-if="mode === 'connect'" class="console-meta">Optional</span>
               </div>
               <div class="input-wrapper">
                 <textarea
                   v-model="formData.simulationRequirement"
                   class="code-input"
-                  placeholder="// 用自然语言输入模拟或预测需求（例.武大若发布撤销肖某处分的公告，会引发什么舆情走向）"
+                  placeholder="// Describe your simulation or prediction goal in natural language (e.g. If Company X announces a product recall, what public opinion trends will emerge?)"
                   rows="6"
                   :disabled="loading"
                 ></textarea>
-                <div class="model-badge">引擎: MiroFish-V1.0</div>
+                <div class="model-badge">Engine: MiroFish-V1.0</div>
               </div>
             </div>
 
-            <!-- 启动按钮 -->
+            <!-- Launch Button -->
             <div class="console-section btn-section">
               <button
                 class="start-engine-btn"
                 @click="startSimulation"
                 :disabled="!canSubmit || loading"
               >
-                <span v-if="!loading">{{ mode === 'connect' ? '连接并启动' : '启动引擎' }}</span>
-                <span v-else>初始化中...</span>
+                <span v-if="!loading">{{ mode === 'connect' ? 'Connect & Launch' : 'Launch Engine' }}</span>
+                <span v-else>Initializing...</span>
                 <span class="btn-arrow">→</span>
               </button>
             </div>
@@ -236,7 +236,7 @@
         </div>
       </section>
 
-      <!-- 历史项目数据库 -->
+      <!-- History Database -->
       <HistoryDatabase />
     </div>
   </div>
@@ -250,47 +250,47 @@ import { connectMindGraph } from '../api/graph'
 
 const router = useRouter()
 
-// 模式: 'upload' (上传文档) 或 'connect' (连接已有MindGraph)
+// Mode: 'upload' (upload documents) or 'connect' (connect existing MindGraph)
 const mode = ref('connect')
 
-// 表单数据
+// Form data
 const formData = ref({
   simulationRequirement: ''
 })
 
-// 文件列表
+// File list
 const files = ref([])
 
-// 状态
+// State
 const loading = ref(false)
 const error = ref('')
 const isDragOver = ref(false)
 
-// 文件输入引用
+// File input ref
 const fileInput = ref(null)
 
-// 计算属性:是否可以提交
+// Computed: whether the form can be submitted
 const canSubmit = computed(() => {
   if (mode.value === 'connect') {
-    return true  // 连接模式下无需文件，模拟需求也可选
+    return true  // Connect mode requires no files; simulation prompt is optional
   }
   return formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
 })
 
-// 触发文件选择
+// Trigger file selection
 const triggerFileInput = () => {
   if (!loading.value) {
     fileInput.value?.click()
   }
 }
 
-// 处理文件选择
+// Handle file selection
 const handleFileSelect = (event) => {
   const selectedFiles = Array.from(event.target.files)
   addFiles(selectedFiles)
 }
 
-// 处理拖拽相关
+// Handle drag events
 const handleDragOver = (e) => {
   if (!loading.value) {
     isDragOver.value = true
@@ -309,7 +309,7 @@ const handleDrop = (e) => {
   addFiles(droppedFiles)
 }
 
-// 添加文件
+// Add files
 const addFiles = (newFiles) => {
   const validFiles = newFiles.filter(file => {
     const ext = file.name.split('.').pop().toLowerCase()
@@ -318,12 +318,12 @@ const addFiles = (newFiles) => {
   files.value.push(...validFiles)
 }
 
-// 移除文件
+// Remove file
 const removeFile = (index) => {
   files.value.splice(index, 1)
 }
 
-// 滚动到底部
+// Scroll to bottom
 const scrollToBottom = () => {
   window.scrollTo({
     top: document.body.scrollHeight,
@@ -331,12 +331,12 @@ const scrollToBottom = () => {
   })
 }
 
-// 开始模拟
+// Start simulation
 const startSimulation = async () => {
   if (!canSubmit.value || loading.value) return
 
   if (mode.value === 'connect') {
-    // 连接模式：调用后端API创建项目，然后跳转
+    // Connect mode: call backend API to create project, then navigate
     try {
       loading.value = true
       const res = await connectMindGraph({
@@ -349,7 +349,7 @@ const startSimulation = async () => {
           params: { projectId: res.data.project_id }
         })
       } else {
-        error.value = res.error || '连接MindGraph失败'
+        error.value = res.error || 'Failed to connect to MindGraph'
       }
     } catch (err) {
       error.value = err.message
@@ -357,7 +357,7 @@ const startSimulation = async () => {
       loading.value = false
     }
   } else {
-    // 上传模式：存储待上传数据，跳转到Process页面
+    // Upload mode: store pending upload data, navigate to Process page
     const { setPendingUpload } = await import('../store/pendingUpload.js')
     setPendingUpload(files.value, formData.value.simulationRequirement)
     router.push({
@@ -369,7 +369,7 @@ const startSimulation = async () => {
 </script>
 
 <style scoped>
-/* 全局变量与重置 */
+/* Global variables & reset */
 :root {
   --black: #000000;
   --white: #FFFFFF;
@@ -377,9 +377,9 @@ const startSimulation = async () => {
   --gray-light: #F5F5F5;
   --gray-text: #666666;
   --border: #E5E5E5;
-  /* 
-    使用 Space Grotesk 作为主要标题字体，JetBrains Mono 作为代码/标签字体
-    确保已在 index.html 引入这些 Google Fonts 
+  /*
+    Space Grotesk for headings, JetBrains Mono for code/labels.
+    Ensure these Google Fonts are imported in index.html.
   */
   --font-mono: 'JetBrains Mono', monospace;
   --font-sans: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
@@ -393,7 +393,7 @@ const startSimulation = async () => {
   color: var(--black);
 }
 
-/* 顶部导航 */
+/* Top navigation */
 .navbar {
   height: 60px;
   background: var(--black);
@@ -436,14 +436,14 @@ const startSimulation = async () => {
   font-family: sans-serif;
 }
 
-/* 主要内容区 */
+/* Main content area */
 .main-content {
   max-width: 1400px;
   margin: 0 auto;
   padding: 60px 40px;
 }
 
-/* Hero 区域 */
+/* Hero section */
 .hero-section {
   display: flex;
   justify-content: space-between;
@@ -574,7 +574,7 @@ const startSimulation = async () => {
 }
 
 .hero-logo {
-  max-width: 500px; /* 调整logo大小 */
+  max-width: 500px; /* Adjust logo size */
   width: 100%;
 }
 
@@ -596,7 +596,7 @@ const startSimulation = async () => {
   border-color: var(--orange);
 }
 
-/* Dashboard 双栏布局 */
+/* Dashboard two-column layout */
 .dashboard-section {
   display: flex;
   gap: 60px;
@@ -611,7 +611,7 @@ const startSimulation = async () => {
   flex-direction: column;
 }
 
-/* 左侧面板 */
+/* Left panel */
 .left-panel {
   flex: 0.8;
 }
@@ -667,7 +667,7 @@ const startSimulation = async () => {
   color: #999;
 }
 
-/* 项目模拟步骤介绍 */
+/* Simulation workflow steps */
 .steps-container {
   border: 1px solid var(--border);
   padding: 30px;
@@ -723,14 +723,14 @@ const startSimulation = async () => {
   color: var(--gray-text);
 }
 
-/* 右侧交互控制台 */
+/* Right interactive console */
 .right-panel {
   flex: 1.2;
 }
 
 .console-box {
-  border: 1px solid #CCC; /* 外部实线 */
-  padding: 8px; /* 内边距形成双重边框感 */
+  border: 1px solid #CCC; /* Outer solid border */
+  padding: 8px; /* Inner padding for double-border effect */
 }
 
 .console-section {
@@ -956,7 +956,7 @@ const startSimulation = async () => {
   overflow: hidden;
 }
 
-/* 可点击状态（非禁用） */
+/* Clickable state (not disabled) */
 .start-engine-btn:not(:disabled) {
   background: var(--black);
   border: 1px solid var(--black);
@@ -981,14 +981,14 @@ const startSimulation = async () => {
   border: 1px solid #E5E5E5;
 }
 
-/* 引导动画：微妙的边框脉冲 */
+/* Guiding animation: subtle border pulse */
 @keyframes pulse-border {
   0% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.2); }
   70% { box-shadow: 0 0 0 6px rgba(0, 0, 0, 0); }
   100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
 }
 
-/* 响应式适配 */
+/* Responsive layout */
 @media (max-width: 1024px) {
   .dashboard-section {
     flex-direction: column;

@@ -4,9 +4,7 @@
 
 <a href="https://trendshift.io/repositories/16144" target="_blank"><img src="https://trendshift.io/api/badge/repositories/16144" alt="666ghj%2FMiroFish | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-简洁通用的群体智能引擎，预测万物
-</br>
-<em>A Simple and Universal Swarm Intelligence Engine, Predicting Anything</em>
+*A Swarm Intelligence Engine for Predictive Simulation*
 
 <a href="https://www.shanda.com/" target="_blank"><img src="./static/image/shanda_logo.png" alt="666ghj%2MiroFish | Shanda" height="40"/></a>
 
@@ -20,187 +18,172 @@
 [![X](https://img.shields.io/badge/X-Follow-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/mirofish_ai)
 [![Instagram](https://img.shields.io/badge/Instagram-Follow-E4405F?style=flat-square&logo=instagram&logoColor=white)](https://www.instagram.com/mirofish_ai/)
 
-[English](./README-EN.md) | [中文文档](./README.md)
-
 </div>
 
-## ⚡ 项目概述
+## Overview
 
-**MiroFish** 是一款基于多智能体技术的新一代 AI 预测引擎。通过提取现实世界的种子信息（如突发新闻、政策草案、金融信号），自动构建出高保真的平行数字世界。在此空间内，成千上万个具备独立人格、长期记忆与行为逻辑的智能体进行自由交互与社会演化。你可透过「上帝视角」动态注入变量，精准推演未来走向——**让未来在数字沙盘中预演，助决策在百战模拟后胜出**。
+**MiroFish** is an AI prediction engine powered by multi-agent swarm intelligence. Upload seed materials — breaking news, policy drafts, financial signals, even novel manuscripts — and MiroFish automatically constructs a high-fidelity parallel digital world. Thousands of autonomous agents with distinct personalities, persistent memory, and behavioral logic interact freely, producing emergent social dynamics. Inject variables from a god's-eye view to explore how the future unfolds.
 
-> 你只需：上传种子材料（数据分析报告或者有趣的小说故事），并用自然语言描述预测需求</br>
-> MiroFish 将返回：一份详尽的预测报告，以及一个可深度交互的高保真数字世界
+> **Input:** Upload documents (PDF/MD/TXT) and describe your prediction scenario in natural language.
+> **Output:** A detailed prediction report and a fully interactive digital world you can query.
 
-### 我们的愿景
+## MindGraph Integration
 
-MiroFish 致力于打造映射现实的群体智能镜像，通过捕捉个体互动引发的群体涌现，突破传统预测的局限：
+This fork replaces the original Zep Cloud memory layer with **[MindGraph Cloud](https://mindgraph.cloud)**, a structured knowledge graph with cognitive retrieval. The difference is fundamental — Zep stores flat memory entries retrieved by vector similarity, while MindGraph builds a richly connected epistemic graph that agents reason over.
 
-- **于宏观**：我们是决策者的预演实验室，让政策与公关在零风险中试错
-- **于微观**：我们是个人用户的创意沙盘，无论是推演小说结局还是探索脑洞，皆可有趣、好玩、触手可及
+**What MindGraph provides that Zep cannot:**
 
-从严肃预测到趣味仿真，我们让每一个如果都能看见结果，让预测万物成为可能。
+| Capability | MindGraph | Zep |
+|---|---|---|
+| **Epistemic graph structure** | 6-layer cognitive architecture (entities, relationships, observations, epistemic states, temporal facts, summaries) | Flat fact/memory list |
+| **Ontology-driven extraction** | LLM generates a domain-specific ontology per project; graph construction follows it | Generic entity extraction |
+| **GraphRAG retrieval** | Multi-hop reasoning across entity relationships and temporal facts | Single-hop vector similarity |
+| **Salience decay** | Facts fade over time like real memory — recent observations outweigh old ones | All memories equally weighted |
+| **Live simulation writeback** | Agent actions (claims, decisions, anomalies) are written to the graph in real-time during simulation | Post-hoc memory storage |
+| **Structured cognitive tools** | InsightForge (multi-hop analysis), PanoramaSearch (graph overview), Interview (agent querying), QuickSearch — all operating over the post-simulation graph | Basic search |
+| **Project isolation** | Namespace isolation via `agent_id` — one API key, multiple independent project graphs | Separate collections |
 
-## 🌐 在线体验
+In practice, this means the ReportAgent can answer questions like *"What chain of events led Agent X to change their stance?"* by traversing relationship chains in the graph — something impossible with flat memory retrieval.
 
-欢迎访问在线 Demo 演示环境，体验我们为你准备的一次关于热点舆情事件的推演预测：[mirofish-live-demo](https://666ghj.github.io/mirofish-demo/)
+## Workflow
 
-## 📸 系统截图
+MiroFish supports two launch modes:
 
-<div align="center">
-<table>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图1.png" alt="截图1" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图2.png" alt="截图2" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图3.png" alt="截图3" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图4.png" alt="截图4" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图5.png" alt="截图5" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图6.png" alt="截图6" width="100%"/></td>
-</tr>
-</table>
-</div>
+**Mode A — Upload Documents**: Upload seed materials (PDF/MD/TXT). MindGraph automatically builds a knowledge graph, then simulation begins.
 
-## 🎬 演示视频
+**Mode B — Connect to MindGraph**: Skip document upload and connect directly to an existing [MindGraph Cloud](https://mindgraph.cloud) knowledge graph. Ideal for users who have already built their graph.
 
-### 1. 武汉大学舆情推演预测 + MiroFish项目讲解
+1. **Graph Construction** — LLM generates a domain-specific ontology, then chunks and extracts entities/relationships into MindGraph's epistemic graph
+2. **Environment Setup** — Entities are read from the graph; GraphRAG-enhanced context drives LLM persona generation; simulation parameters are auto-configured
+3. **Simulation** — Dual-platform parallel simulation (Twitter + Reddit via OASIS); agent activity is written back to MindGraph in real-time with salience decay modeling memory fading
+4. **Report Generation** — ReportAgent queries the post-simulation graph through MindGraph's cognitive retrieval tools (InsightForge, PanoramaSearch, Interview, QuickSearch)
+5. **Deep Interaction** — Chat with any individual agent in the simulated world, or continue querying the ReportAgent
 
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1VYBsBHEMY/" target="_blank"><img src="./static/image/武大模拟演示封面.png" alt="MiroFish Demo Video" width="75%"/></a>
+## Quick Start
 
-点击图片查看使用微舆BettaFish生成的《武大舆情报告》进行预测的完整演示视频
-</div>
+### Option 1: Source Code (Recommended)
 
-### 2. 《红楼梦》失传结局推演预测
+#### Prerequisites
 
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1cPk3BBExq" target="_blank"><img src="./static/image/红楼梦模拟推演封面.jpg" alt="MiroFish Demo Video" width="75%"/></a>
+| Tool | Version | Description | Check |
+|------|---------|-------------|-------|
+| **Node.js** | 18+ | Frontend runtime (includes npm) | `node -v` |
+| **Python** | 3.11 - 3.12 | Backend runtime | `python --version` |
+| **uv** | Latest | Python package manager | `uv --version` |
 
-点击图片查看基于《红楼梦》前80回数十万字，MiroFish深度预测失传结局
-</div>
-
-> **金融方向推演预测**、**时政要闻推演预测**等示例陆续更新中...
-
-## 🔄 工作流程
-
-MiroFish 支持两种启动模式：
-
-**模式 A — 上传文档**：上传种子材料 (PDF/MD/TXT)，MindGraph 自动构建知识图谱，然后进入模拟。
-
-**模式 B — 连接 MindGraph**：跳过文档上传，直接连接已有的 [MindGraph Cloud](https://mindgraph.cloud) 知识图谱，立即进入模拟。适用于已通过 MindGraph 构建好图谱的用户。
-
-1. **图谱构建** (模式 A) / **图谱连接** (模式 B)：现实种子提取 & MindGraph 认知图谱构建 / 直连已有图谱
-2. **环境搭建**：实体关系抽取 & GraphRAG 增强人设生成 & LLM 智能生成仿真参数
-3. **开始模拟**：双平台并行模拟 & Agent 活动实时写回 MindGraph（声明、决策、异常检测）& 显著度衰减模拟记忆遗忘
-4. **报告生成**：ReportAgent 通过 MindGraph 检索工具（InsightForge/PanoramaSearch）与模拟后图谱深度交互
-5. **深度互动**：与模拟世界中的任意一位进行对话 & 与 ReportAgent 进行对话
-
-## 🚀 快速开始
-
-### 一、源码部署（推荐）
-
-#### 前置要求
-
-| 工具 | 版本要求 | 说明 | 安装检查 |
-|------|---------|------|---------|
-| **Node.js** | 18+ | 前端运行环境，包含 npm | `node -v` |
-| **Python** | ≥3.11, ≤3.12 | 后端运行环境 | `python --version` |
-| **uv** | 最新版 | Python 包管理器 | `uv --version` |
-
-#### 1. 配置环境变量
+#### 1. Configure Environment Variables
 
 ```bash
-# 复制示例配置文件
 cp .env.example .env
-
-# 编辑 .env 文件，填入必要的 API 密钥
+# Edit .env and fill in your API keys
 ```
 
-**必需的环境变量：**
+**Required:**
 
 ```env
-# LLM API配置（支持 OpenAI SDK 格式的任意 LLM API）
-# 推荐使用阿里百炼平台qwen-plus模型：https://bailian.console.aliyun.com/
-# 注意消耗较大，可先进行小于40轮的模拟尝试
+# LLM API (any OpenAI SDK-compatible endpoint)
+# Recommended: Google Gemini 2.5 Flash via OpenRouter
 LLM_API_KEY=your_api_key
-LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_MODEL_NAME=qwen-plus
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL_NAME=google/gemini-2.5-flash
 
-# MindGraph Cloud 配置（知识图谱存储与认知检索）
-# 注册获取 API Key：https://mindgraph.cloud/dashboard/keys
+# MindGraph Cloud (knowledge graph storage & cognitive retrieval)
+# Get an API key: https://mindgraph.cloud/dashboard/keys
 MINDGRAPH_API_KEY=your_mindgraph_api_key
 MINDGRAPH_BASE_URL=https://api.mindgraph.cloud
 ```
 
-#### 2. 安装依赖
+#### 2. Install Dependencies
 
 ```bash
-# 一键安装所有依赖（根目录 + 前端 + 后端）
+# Install all dependencies (frontend + backend)
 npm run setup:all
 ```
 
-或者分步安装：
+Or step by step:
 
 ```bash
-# 安装 Node 依赖（根目录 + 前端）
-npm run setup
-
-# 安装 Python 依赖（后端，自动创建虚拟环境）
-npm run setup:backend
+npm run setup          # Node dependencies (root + frontend)
+npm run setup:backend  # Python dependencies (auto-creates virtualenv)
 ```
 
-#### 3. 启动服务
+#### 3. Start
 
 ```bash
-# 同时启动前后端（在项目根目录执行）
-npm run dev
+npm run dev  # Starts frontend (port 3000) + backend (port 5001)
 ```
 
-**服务地址：**
-- 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5001`
-
-**单独启动：**
+Individual services:
 
 ```bash
-npm run backend   # 仅启动后端
-npm run frontend  # 仅启动前端
+npm run backend   # Backend only
+npm run frontend  # Frontend only
 ```
 
-### 二、Docker 部署
+### Option 2: Docker
 
 ```bash
-# 1. 配置环境变量（同源码部署）
-cp .env.example .env
-
-# 2. 拉取镜像并启动
-docker compose up -d
+cp .env.example .env   # Configure API keys
+docker compose up -d   # Pull and start
 ```
 
-默认会读取根目录下的 `.env`，并映射端口 `3000（前端）/5001（后端）`
+Reads `.env` from the project root. Maps ports `3000` (frontend) and `5001` (backend).
 
-> 在 `docker-compose.yml` 中已通过注释提供加速镜像地址，可按需替换
+## Live Demo
 
-## 📬 更多交流
+Try a pre-built prediction simulation: [mirofish-live-demo](https://666ghj.github.io/mirofish-demo/)
+
+## Screenshots
 
 <div align="center">
-<img src="./static/image/QQ群.png" alt="QQ交流群" width="60%"/>
+<table>
+<tr>
+<td><img src="./static/image/Screenshot/运行截图1.png" alt="Screenshot 1" width="100%"/></td>
+<td><img src="./static/image/Screenshot/运行截图2.png" alt="Screenshot 2" width="100%"/></td>
+</tr>
+<tr>
+<td><img src="./static/image/Screenshot/运行截图3.png" alt="Screenshot 3" width="100%"/></td>
+<td><img src="./static/image/Screenshot/运行截图4.png" alt="Screenshot 4" width="100%"/></td>
+</tr>
+<tr>
+<td><img src="./static/image/Screenshot/运行截图5.png" alt="Screenshot 5" width="100%"/></td>
+<td><img src="./static/image/Screenshot/运行截图6.png" alt="Screenshot 6" width="100%"/></td>
+</tr>
+</table>
 </div>
 
-&nbsp;
+## Demo Videos
 
-MiroFish团队长期招募全职/实习，如果你对多Agent应用感兴趣，欢迎投递简历至：**mirofish@shanda.com**
+### Wuhan University Public Opinion Simulation
 
-## 📄 致谢
+<div align="center">
+<a href="https://www.bilibili.com/video/BV1VYBsBHEMY/" target="_blank"><img src="./static/image/武大模拟演示封面.png" alt="MiroFish Demo Video" width="75%"/></a>
 
-**MiroFish 得到了盛大集团的战略支持和孵化！**
+Full demo of a public opinion prediction generated with BettaFish
+</div>
 
-- 仿真引擎由 **[OASIS](https://github.com/camel-ai/oasis)** 驱动 (CAMEL-AI)
-- 知识图谱与认知记忆由 **[MindGraph Cloud](https://mindgraph.cloud)** 提供（替代原 Zep Cloud 方案），支持 6 层认知架构、GraphRAG 检索、显著度衰减等能力
+### Dream of the Red Chamber — Lost Ending Prediction
 
-## 📈 项目统计
+<div align="center">
+<a href="https://www.bilibili.com/video/BV1cPk3BBExq" target="_blank"><img src="./static/image/红楼梦模拟推演封面.jpg" alt="MiroFish Demo Video" width="75%"/></a>
+
+MiroFish predicts the lost ending based on the first 80 chapters
+</div>
+
+## Acknowledgments
+
+**MiroFish has received strategic support and incubation from Shanda Group.**
+
+- Simulation engine powered by **[OASIS](https://github.com/camel-ai/oasis)** (CAMEL-AI)
+- Knowledge graph and cognitive memory powered by **[MindGraph Cloud](https://mindgraph.cloud)** — replacing the original Zep Cloud integration with a structured epistemic graph, GraphRAG retrieval, salience decay, and real-time simulation writeback
+
+## Contact
+
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](http://discord.gg/ePf5aPaHnA) [![X](https://img.shields.io/badge/X-Follow-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/mirofish_ai)
+
+The MiroFish team is hiring (full-time and internships). If you're interested in multi-agent simulation and LLM applications, reach out at **mirofish@shanda.com**.
+
+## Star History
 
 <a href="https://www.star-history.com/#666ghj/MiroFish&type=date&legend=top-left">
  <picture>
@@ -209,3 +192,7 @@ MiroFish团队长期招募全职/实习，如果你对多Agent应用感兴趣，
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=666ghj/MiroFish&type=date&legend=top-left" />
  </picture>
 </a>
+
+## License
+
+[AGPL-3.0](LICENSE)

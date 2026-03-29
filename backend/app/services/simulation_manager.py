@@ -398,6 +398,7 @@ class SimulationManager:
                 defined_entity_types=defined_entity_types,
                 enrich_with_edges=True,
                 max_entities=max_agents,
+                simulation_requirement=simulation_requirement,
                 source=source
             )
             

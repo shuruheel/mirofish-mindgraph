@@ -165,12 +165,106 @@ class EntityReader:
             logger.warning(f"获取节点 {node_uuid} 的边失败: {str(e)}")
             return []
 
+    def _rank_by_relevance(
+        self,
+        entities: List['EntityNode'],
+        requirement: str,
+        max_entities: int,
+    ) -> List['EntityNode']:
+        """Rank entities by relevance to the simulation requirement.
+
+        1. Summarize requirement into English keywords
+        2. retrieve_context(keywords, k=20, layer='epistemic') → chunks
+        3. Count entity name mentions in chunk text
+        4. Rank by mention count, break ties with edge count
+        5. Pad with highest-edge-count entities if needed
+        """
+        from collections import Counter
+
+        entity_names = {e.name for e in entities if len(e.name) >= 3}
+        total = len(entities)
+
+        # Step 1: Summarize requirement into keywords
+        try:
+            from .graph_context_provider import GraphContextProvider
+            keywords = GraphContextProvider._summarize_feed(requirement)
+            if not keywords:
+                keywords = requirement[:50]
+                logger.info("需求摘要失败, 使用原始文本前50字符")
+        except Exception as e:
+            keywords = requirement[:50]
+            logger.warning(f"需求摘要异常: {e}")
+
+        logger.info(f"实体相关性排序: query='{keywords[:80]}...'")
+
+        # Step 2: Retrieve epistemic context
+        try:
+            from mindgraph import MindGraph
+            import os
+            mg = MindGraph(
+                os.environ.get("MINDGRAPH_BASE_URL", "https://api.mindgraph.cloud"),
+                api_key=os.environ.get("MINDGRAPH_API_KEY", ""),
+                timeout=120,
+            )
+            result = mg.retrieve_context(query=keywords, k=20, layer="epistemic")
+            chunks = result.get("chunks", [])
+            graph_nodes = result.get("graph", {}).get("nodes", [])
+        except Exception as e:
+            logger.warning(f"相关性检索失败, 降级为连接度排序: {e}")
+            entities.sort(key=lambda e: len(e.related_edges), reverse=True)
+            return entities[:max_entities]
+
+        # Step 3: Count entity name mentions in chunks + node labels/summaries
+        all_text = " ".join(c.get("content", "") for c in chunks)
+        all_text += " " + " ".join(
+            n.get("label", "") + " " + n.get("summary", "")
+            for n in graph_nodes
+        )
+
+        mentions = Counter()
+        for name in entity_names:
+            count = all_text.count(name)
+            if count > 0:
+                mentions[name] = count
+
+        # Step 4: Dedup by name (keep the entity with most edges per name)
+        best_by_name: Dict[str, 'EntityNode'] = {}
+        for entity in entities:
+            existing = best_by_name.get(entity.name)
+            if not existing or len(entity.related_edges) > len(existing.related_edges):
+                best_by_name[entity.name] = entity
+        deduped = list(best_by_name.values())
+
+        # Step 5: Score = mentions * 100 + edge_count (mentions dominate)
+        scored = []
+        for entity in deduped:
+            mention_score = mentions.get(entity.name, 0)
+            edge_score = len(entity.related_edges)
+            scored.append((mention_score * 100 + edge_score, entity))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        selected = [entity for _, entity in scored[:max_entities]]
+
+        # Log results
+        mentioned_count = sum(1 for s, _ in scored[:max_entities] if s >= 100)
+        logger.info(
+            f"实体相关性排序完成: {total} → {len(deduped)} (去重) → {len(selected)} "
+            f"({mentioned_count} 与主题相关, "
+            f"{len(selected) - mentioned_count} 按连接度补充)"
+        )
+        if selected:
+            top5 = [e.name for e in selected[:5]]
+            logger.info(f"  Top 5: {top5}")
+
+        return selected
+
     def filter_defined_entities(
         self,
         graph_id: str,
         defined_entity_types: Optional[List[str]] = None,
         enrich_with_edges: bool = True,
         max_entities: int = 0,
+        simulation_requirement: str = "",
         source: str = "upload"
     ) -> FilteredEntities:
         """
@@ -377,16 +471,22 @@ class EntityReader:
         if skipped_types:
             logger.info(f"跳过非Agent实体类型: {dict(sorted(skipped_types.items(), key=lambda x: -x[1]))}")
 
-        # Rank by graph connectivity and limit if requested
+        # Rank and limit if requested
         if max_entities > 0 and len(filtered_entities) > max_entities:
-            filtered_entities.sort(key=lambda e: len(e.related_edges), reverse=True)
-            min_edges = len(filtered_entities[max_entities - 1].related_edges)
-            max_edges = len(filtered_entities[0].related_edges)
-            logger.info(
-                f"按图谱连接度排序: {len(filtered_entities)} → top {max_entities} "
-                f"(边数范围: {min_edges}-{max_edges})"
-            )
-            filtered_entities = filtered_entities[:max_entities]
+            if simulation_requirement:
+                # Relevance-based ranking: retrieve epistemic context for the
+                # requirement, count which entities appear in the results
+                filtered_entities = self._rank_by_relevance(
+                    filtered_entities, simulation_requirement, max_entities
+                )
+            else:
+                # Fallback: rank by edge count
+                filtered_entities.sort(key=lambda e: len(e.related_edges), reverse=True)
+                filtered_entities = filtered_entities[:max_entities]
+                logger.info(
+                    f"按图谱连接度排序: top {max_entities} "
+                    f"(边数: {len(filtered_entities[-1].related_edges)}-{len(filtered_entities[0].related_edges)})"
+                )
 
         logger.info(f"筛选完成: 总节点 {total_count}, 符合条件 {len(filtered_entities)}, "
                    f"实体类型: {entity_types_found}")

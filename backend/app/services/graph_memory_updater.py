@@ -181,7 +181,7 @@ class GraphMemoryUpdater:
     Groups by platform, batch-sending to MindGraph every BATCH_SIZE activities.
     """
 
-    BATCH_SIZE = 5
+    BATCH_SIZE = 10  # Larger batches are efficient now — 2-3 API calls per batch regardless of size
     PLATFORM_DISPLAY_NAMES = {
         'twitter': 'World 1',
         'reddit': 'World 2',
@@ -244,6 +244,10 @@ class GraphMemoryUpdater:
         self._total_traces = 0
         self._failed_count = 0
         self._skipped_count = 0
+
+        # Circuit breaker: stop trying after consecutive batch failures
+        self._consecutive_batch_failures = 0
+        self.MAX_CONSECUTIVE_FAILURES = 3  # stop after 3 consecutive failed batches
 
         logger.info(f"GraphMemoryUpdater initialized: graph_id={graph_id}, source={source}, batch_size={self.BATCH_SIZE}")
 
@@ -426,92 +430,165 @@ class GraphMemoryUpdater:
         if not activities:
             return
 
+        # Circuit breaker: stop retrying if API is consistently failing
+        if self._consecutive_batch_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            dropped = len(activities)
+            self._skipped_count += dropped
+            queue_remaining = self._activity_queue.qsize()
+            if queue_remaining > 0:
+                logger.warning(
+                    f"Circuit breaker open: dropping {dropped} activities "
+                    f"({queue_remaining} still queued) after "
+                    f"{self._consecutive_batch_failures} consecutive batch failures"
+                )
+            return
+
         # Hot-reload agent UIDs if we started before Phase 4 completed
         self._try_load_agent_uids()
 
         display_name = self._get_platform_display_name(platform)
-        trace_texts = []
-        journals_sent = 0
-        traces_sent = 0
-        decisions_in_batch = 0  # Rate-limit decisions per batch
 
-        # Collect links to create in batch after all journals are written
-        pending_links = []  # [(from_uid, to_uid)]
+        # ── Phase 1: Classify activities and accumulate batch data ──
+        # Instead of individual API calls per activity, we accumulate all
+        # nodes (journals, decisions, options) and create them in a single
+        # batch_create call.  This reduces ~10 API calls per batch to 2-3.
+
+        batch_nodes = []        # Nodes to create in one batch_create call
+        node_metadata = []      # Parallel array: metadata for each node (type, agent_name, etc.)
+        trace_texts = []        # Social action descriptions (combined into single trace)
+        decisions_in_batch = 0
 
         for activity in activities:
-            try:
-                content = self._get_content(activity)
+            content = self._get_content(activity)
 
-                # Content actions -> Journal nodes (Memory layer, no cognitive extraction)
-                if (activity.action_type in self.CONTENT_ACTIONS
-                        and len(content) >= self.MIN_CLAIM_CONTENT_LENGTH):
+            # Content actions → Journal node (accumulated for batch)
+            if (activity.action_type in self.CONTENT_ACTIONS
+                    and len(content) >= self.MIN_CLAIM_CONTENT_LENGTH):
 
-                    journal_content = f"{activity.agent_name}: {content}"
-                    result = self.client.create_journal(
-                        content=journal_content,
-                        project_id=self.graph_id,
-                        journal_type="simulation_post",
-                        tags=[platform, activity.action_type,
-                              f"round_{activity.round_num}"],
-                        session_uid=self._session_uid,
-                    )
+                journal_content = f"{activity.agent_name}: {content}"
+                batch_nodes.append({
+                    "label": journal_content[:100],
+                    "props": {
+                        "_type": "Journal",
+                        "content": journal_content,
+                        "journal_type": "simulation_post",
+                        "tags": [platform, activity.action_type,
+                                 f"round_{activity.round_num}"],
+                    },
+                    "agent_id": self.graph_id,
+                })
+                node_metadata.append({
+                    "kind": "journal",
+                    "agent_name": activity.agent_name,
+                })
 
-                    # Collect Agent → Journal link (created in batch below)
-                    journal_uid = result.get("uid", "") if isinstance(result, dict) else ""
-                    agent_uid = self._agent_node_uids.get(activity.agent_name)
-                    if journal_uid and agent_uid:
-                        pending_links.append((agent_uid, journal_uid))
-                    elif not journal_uid:
-                        logger.warning(f"Journal creation returned no UID: {activity.agent_name}")
-                    elif not agent_uid:
-                        logger.warning(f"Agent node UID not found: '{activity.agent_name}' (registered: {len(self._agent_node_uids)})")
+                # Anomaly detection (rare — only records if stance contradicts content)
+                self._check_anomaly(activity, content)
 
-                    journals_sent += 1
-                    self._total_claims += 1
+                # High-impact decision → Decision + Option nodes (accumulated)
+                if (decisions_in_batch < self.MAX_DECISIONS_PER_BATCH
+                        and len(content) >= self.HIGH_IMPACT_CONTENT_LENGTH):
+                    stance = activity.action_args.get("stance", "neutral")
+                    sentiment = activity.action_args.get("sentiment_bias", 0.0)
+                    desc = f"{activity.agent_name} decided to publicly comment"
+                    batch_nodes.append({
+                        "label": desc[:100],
+                        "props": {
+                            "_type": "Decision",
+                            "description": desc,
+                            "rationale": f"Agent stance: {stance}, sentiment: {sentiment}",
+                        },
+                        "agent_id": self.graph_id,
+                    })
+                    node_metadata.append({
+                        "kind": "decision",
+                        "agent_name": activity.agent_name,
+                    })
+                    batch_nodes.append({
+                        "label": content[:100],
+                        "props": {
+                            "_type": "Option",
+                            "description": content[:200],
+                        },
+                        "agent_id": self.graph_id,
+                    })
+                    node_metadata.append({"kind": "option"})
+                    decisions_in_batch += 1
+            else:
+                # Social decision → Decision node (accumulated)
+                if (activity.action_type in self.SOCIAL_DECISION_ACTIONS
+                        and decisions_in_batch < self.MAX_DECISIONS_PER_BATCH):
+                    target = activity.action_args.get("target_user_name", "unknown")
+                    verb = "follow" if activity.action_type == "FOLLOW" else "mute"
+                    desc = f"{activity.agent_name} decided to {verb} {target}"
+                    batch_nodes.append({
+                        "label": desc[:100],
+                        "props": {
+                            "_type": "Decision",
+                            "description": desc,
+                            "rationale": "Social alignment decision",
+                        },
+                        "agent_id": self.graph_id,
+                    })
+                    node_metadata.append({
+                        "kind": "social_decision",
+                        "agent_name": activity.agent_name,
+                    })
+                    decisions_in_batch += 1
 
-                    # Anomaly detection: Check if agent behavior contradicts stance
-                    self._check_anomaly(activity, content)
-                    # High-impact decision recording (rate-limited)
-                    if decisions_in_batch < self.MAX_DECISIONS_PER_BATCH:
-                        if self._record_decision(activity, content):
-                            decisions_in_batch += 1
-                else:
-                    # Social decision recording (FOLLOW/MUTE, rate-limited)
-                    if (activity.action_type in self.SOCIAL_DECISION_ACTIONS
-                            and decisions_in_batch < self.MAX_DECISIONS_PER_BATCH):
-                        if self._record_decision(activity, ""):
-                            decisions_in_batch += 1
-                    # Social actions -> collect as trace text
-                    trace_texts.append(activity.to_episode_text())
-
-            except Exception as e:
-                logger.warning(f"Structured write failed, falling back to trace: {activity.agent_name} {activity.action_type}: {e}")
+                # Social actions → trace text (combined into single write)
                 trace_texts.append(activity.to_episode_text())
 
-        # Batch create Agent → Journal links (single API call)
-        if pending_links:
-            logger.info(f"Creating {len(pending_links)}  AUTHORED edges")
-            try:
-                batch_edges = [
-                    {"from_uid": from_uid, "to_uid": to_uid, "edge_type": "AUTHORED"}
-                    for from_uid, to_uid in pending_links
-                ]
-                result = self.client.batch_create(edges=batch_edges)
-                errors = result.get("errors", [])
-                if errors:
-                    logger.warning(f"Batch AUTHORED edge creation: {len(errors)} errors: {errors[:3]}")
-            except Exception as e:
-                logger.warning(f"Batch AUTHORED edge creation failed, falling back to individual: {e}")
-                for from_uid, to_uid in pending_links:
-                    try:
-                        self.client.add_link(
-                            from_uid=from_uid, to_uid=to_uid,
-                            edge_type="AUTHORED", project_id=self.graph_id,
-                        )
-                    except Exception as link_err:
-                        logger.warning(f"Individual AUTHORED edge failed: {from_uid} -> {to_uid}: {link_err}")
+        # ── Phase 2: Single batch_create for all nodes ──
+        journals_sent = 0
+        node_uids = []  # UIDs returned by batch_create, same order as batch_nodes
 
-        # Batch-write trace entries
+        if batch_nodes:
+            try:
+                result = self.client.batch_create(nodes=batch_nodes)
+                node_uids = result.get("node_uids", []) if isinstance(result, dict) else []
+                # Count journals
+                journals_sent = sum(1 for m in node_metadata if m["kind"] == "journal")
+                self._total_claims += journals_sent
+            except Exception as e:
+                logger.warning(f"Batch node creation failed ({len(batch_nodes)} nodes): {e}")
+                self._failed_count += 1
+
+        # ── Phase 3: Single batch_create for all edges ──
+        if node_uids:
+            batch_edges = []
+            last_decision_uid = ""
+
+            for i, meta in enumerate(node_metadata):
+                uid = node_uids[i] if i < len(node_uids) else ""
+                if not uid:
+                    continue
+
+                if meta["kind"] == "journal":
+                    agent_uid = self._agent_node_uids.get(meta["agent_name"], "")
+                    if agent_uid:
+                        batch_edges.append({"from_uid": agent_uid, "to_uid": uid, "edge_type": "AUTHORED"})
+
+                elif meta["kind"] in ("decision", "social_decision"):
+                    last_decision_uid = uid
+                    agent_uid = self._agent_node_uids.get(meta["agent_name"], "")
+                    if agent_uid:
+                        batch_edges.append({"from_uid": agent_uid, "to_uid": uid, "edge_type": "DECIDED"})
+
+                elif meta["kind"] == "option" and last_decision_uid:
+                    batch_edges.append({"from_uid": last_decision_uid, "to_uid": uid, "edge_type": "HasOption"})
+
+            if batch_edges:
+                try:
+                    result = self.client.batch_create(edges=batch_edges)
+                    errors = result.get("errors", [])
+                    if errors:
+                        logger.warning(f"Batch edge creation: {len(errors)} errors: {errors[:3]}")
+                except Exception as e:
+                    logger.warning(f"Batch edge creation failed ({len(batch_edges)} edges): {e}")
+
+        # ── Phase 4: Single trace write for social actions ──
+        traces_sent = 0
         if trace_texts:
             combined_trace = "\n".join(trace_texts)
             try:
@@ -523,12 +600,15 @@ class GraphMemoryUpdater:
                         trace_type="simulation_activity"
                     )
                 else:
-                    # Fallback: create Journal directly when no session
-                    self.client.create_journal(
-                        content=combined_trace,
-                        project_id=self.graph_id,
-                        journal_type="simulation_trace",
-                    )
+                    self.client.batch_create(nodes=[{
+                        "label": combined_trace[:100],
+                        "props": {
+                            "_type": "Journal",
+                            "content": combined_trace,
+                            "journal_type": "simulation_trace",
+                        },
+                        "agent_id": self.graph_id,
+                    }])
                 traces_sent = len(trace_texts)
                 self._total_traces += traces_sent
             except Exception as e:
@@ -538,8 +618,21 @@ class GraphMemoryUpdater:
         self._total_sent += 1
         self._total_items_sent += len(activities)
         queue_remaining = self._activity_queue.qsize()
+
+        # Circuit breaker: track consecutive failures
+        batch_succeeded = journals_sent > 0 or traces_sent > 0
+        if batch_succeeded:
+            self._consecutive_batch_failures = 0
+        else:
+            self._consecutive_batch_failures += 1
+            if self._consecutive_batch_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    f"Circuit breaker tripped: {self._consecutive_batch_failures} consecutive "
+                    f"batch failures — will drop remaining queued activities ({queue_remaining})"
+                )
+
         logger.info(
-            f"Successfully sent {len(activities)} {display_name}activities "
+            f"Sent {len(activities)} {display_name}activities "
             f"(journals={journals_sent}, traces={traces_sent}, decisions={decisions_in_batch}) "
             f"to graph {self.graph_id} [queue={queue_remaining}]"
         )
@@ -556,6 +649,20 @@ class GraphMemoryUpdater:
             except Empty:
                 break
 
+        # If circuit breaker is already tripped, skip sending and log dropped count
+        if self._consecutive_batch_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            with self._buffer_lock:
+                total_dropped = sum(len(b) for b in self._platform_buffers.values())
+                if total_dropped:
+                    logger.warning(
+                        f"Circuit breaker open during flush: dropping {total_dropped} "
+                        f"remaining activities (API was returning errors)"
+                    )
+                    self._skipped_count += total_dropped
+                for platform in self._platform_buffers:
+                    self._platform_buffers[platform] = []
+            return
+
         with self._buffer_lock:
             for platform, buffer in self._platform_buffers.items():
                 if buffer:
@@ -571,29 +678,16 @@ class GraphMemoryUpdater:
 
     def _link_agent_to_nodes(self, agent_uid: str, target_uids: List[str],
                              edge_type: str):
-        """
-        Create edges from Agent node to target nodes (batch API preferred)
-
-        Uses batch_create to create all edges at once, falls back to individual creation on failure.
-        """
+        """Create edges from Agent node to target nodes (batch API)."""
         if not target_uids:
             return
-        batch_edges = [
-            {"from_uid": agent_uid, "to_uid": uid, "edge_type": edge_type}
-            for uid in target_uids
-        ]
         try:
-            self.client.batch_create(edges=batch_edges)
+            self.client.batch_create(edges=[
+                {"from_uid": agent_uid, "to_uid": uid, "edge_type": edge_type}
+                for uid in target_uids
+            ])
         except Exception as e:
-            logger.debug(f"Batch creating {edge_type} edges failed, falling back to individual: {e}")
-            for uid in target_uids:
-                try:
-                    self.client.add_link(
-                        from_uid=agent_uid, to_uid=uid,
-                        edge_type=edge_type, project_id=self.graph_id,
-                    )
-                except Exception:
-                    pass
+            logger.debug(f"Batch {edge_type} edge creation failed: {e}")
 
     # ═══════════════════════════════════════
     # Inter-round decay + post-simulation distillation + anomaly detection + decision recording
@@ -669,94 +763,6 @@ class GraphMemoryUpdater:
                     self._link_agent_to_nodes(agent_uid, [anomaly_uid], "EXHIBITED")
             except Exception as e:
                 logger.debug(f"Failed to record anomaly: {e}")
-
-    def _record_decision(self, activity: AgentActivity, content: str) -> bool:
-        """
-        Record high-impact action as Decision node
-
-        Uses batch API to create Decision + Option nodes in a single call,
-        then links Agent→Decision via batch edges.
-
-        Returns True if a decision was recorded (for rate-limiting).
-        """
-        stance = activity.action_args.get("stance", "neutral")
-        sentiment = activity.action_args.get("sentiment_bias", 0.0)
-        agent_uid = self._agent_node_uids.get(activity.agent_name)
-
-        if activity.action_type in self.CONTENT_ACTIONS and len(content) >= self.HIGH_IMPACT_CONTENT_LENGTH:
-            description = f"{activity.agent_name} decided to publicly comment"
-            rationale = f"Agent stance: {stance}, sentiment: {sentiment}"
-            try:
-                # Batch create Decision + Option nodes in one call
-                result = self.client.batch_create(nodes=[
-                    {
-                        "label": description[:100],
-                        "props": {
-                            "_type": "Decision",
-                            "description": description,
-                            "rationale": rationale,
-                        },
-                        "agent_id": self.graph_id,
-                    },
-                    {
-                        "label": content[:100],
-                        "props": {
-                            "_type": "Option",
-                            "description": content[:200],
-                        },
-                        "agent_id": self.graph_id,
-                    },
-                ])
-                # Link Agent → Decision if we got UIDs back
-                node_uids = result.get("node_uids", []) if isinstance(result, dict) else []
-                if agent_uid and node_uids:
-                    decision_uid = node_uids[0] if len(node_uids) > 0 else ""
-                    option_uid = node_uids[1] if len(node_uids) > 1 else ""
-                    edges = []
-                    if decision_uid:
-                        edges.append({"from_uid": agent_uid, "to_uid": decision_uid, "edge_type": "DECIDED"})
-                    if decision_uid and option_uid:
-                        edges.append({"from_uid": decision_uid, "to_uid": option_uid, "edge_type": "HasOption"})
-                    if edges:
-                        try:
-                            self.client.batch_create(edges=edges)
-                        except Exception:
-                            pass
-                return True
-            except Exception as e:
-                logger.debug(f"Failed to record decision: {e}")
-                return False
-
-        elif activity.action_type in self.SOCIAL_DECISION_ACTIONS:
-            target = activity.action_args.get("target_user_name", "unknown")
-            verb = "follow" if activity.action_type == "FOLLOW" else "mute"
-            description = f"{activity.agent_name} decided to {verb} {target}"
-            try:
-                result = self.client.batch_create(nodes=[
-                    {
-                        "label": description[:100],
-                        "props": {
-                            "_type": "Decision",
-                            "description": description,
-                            "rationale": "Social alignment decision",
-                        },
-                        "agent_id": self.graph_id,
-                    },
-                ])
-                node_uids = result.get("node_uids", []) if isinstance(result, dict) else []
-                if agent_uid and node_uids:
-                    try:
-                        self.client.batch_create(edges=[
-                            {"from_uid": agent_uid, "to_uid": node_uids[0], "edge_type": "DECIDED"}
-                        ])
-                    except Exception:
-                        pass
-                return True
-            except Exception as e:
-                logger.debug(f"Failed to record social decision: {e}")
-                return False
-
-        return False
 
     def _distill_simulation(self):
         """

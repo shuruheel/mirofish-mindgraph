@@ -59,7 +59,7 @@ class GraphBuilderService:
         graph_name: str = "MiroFish Graph",
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-        batch_size: int = 3
+        batch_size: int = 2  # CozoDB has single writer — keep concurrent ingestion low
     ) -> str:
         """
         Build graph asynchronously

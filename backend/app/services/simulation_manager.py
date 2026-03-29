@@ -567,6 +567,7 @@ class SimulationManager:
 
             # ========== Phase 4: Register cognitive structures + Agent nodes to MindGraph ==========
             # Idempotent: skip if agent_node_uids.json already exists from a previous run
+            # Uses batch API to minimize write pressure on CozoDB's single writer
             uids_path = os.path.join(sim_dir, "agent_node_uids.json")
             if Config.MINDGRAPH_API_KEY and not os.path.exists(uids_path):
                 try:
@@ -580,11 +581,11 @@ class SimulationManager:
                     )
                     logger.info(f"Registered prediction hypothesis: {simulation_requirement[:50]}...")
 
-                    # Use find_or_create_entity for idempotency (avoid duplicate creation on retry)
-                    agent_node_uids = {}  # agent_name → agent_node_uid
-                    journals_created = 0
+                    # ── Collect all nodes for batch creation ──
+                    # Entity nodes (SimulationAgent) + Journal nodes (stance records)
+                    batch_nodes = []
+                    node_metadata = []  # Parallel array: {kind, name, ...}
 
-                    # Batch: collect all agent data first, then create nodes
                     for agent_config in sim_params.agent_configs:
                         name = agent_config.entity_name
                         stance = getattr(agent_config, 'stance', 'neutral')
@@ -592,58 +593,87 @@ class SimulationManager:
                         influence = getattr(agent_config, 'influence_weight', 1.0)
                         entity_type = getattr(agent_config, 'entity_type', '')
 
-                        # find_or_create_entity is idempotent — returns existing node if name matches
-                        try:
-                            result = mg_client.create_entity(
-                                name=name,
-                                entity_type="SimulationAgent",
-                                project_id=state.graph_id,
-                                description=f"{entity_type}: {stance} stance, sentiment={sentiment}",
-                                props={
-                                    "entity_type": entity_type,
-                                    "stance": stance,
-                                    "sentiment_bias": sentiment,
-                                    "influence_weight": influence,
-                                    "simulation_id": simulation_id,
-                                },
-                            )
-                            uid = result.get("uid", "")
-                            if uid:
-                                agent_node_uids[name] = uid
-                        except Exception as e:
-                            logger.warning(f"Failed to register Agent node ({name}): {e}")
+                        # Entity node for this agent
+                        batch_nodes.append({
+                            "label": name,
+                            "props": {
+                                "_type": "Entity",
+                                "entity_type": "SimulationAgent",
+                                "original_entity_type": entity_type,
+                                "stance": stance,
+                                "sentiment_bias": sentiment,
+                                "influence_weight": influence,
+                                "simulation_id": simulation_id,
+                                "summary": f"{entity_type}: {stance} stance, sentiment={sentiment}",
+                            },
+                            "agent_id": state.graph_id,
+                        })
+                        node_metadata.append({"kind": "entity", "name": name})
 
-                        # Create Journal entry recording stance for non-neutral agents (Memory layer)
+                        # Journal node for non-neutral agents
                         if stance != "neutral":
-                            try:
-                                journal_content = (
-                                    f"{name} holds a {stance} stance "
-                                    f"with sentiment bias {sentiment:.2f} "
-                                    f"and influence weight {influence:.2f}"
-                                )
-                                journal_result = mg_client.create_journal(
-                                    content=journal_content,
-                                    project_id=state.graph_id,
-                                    journal_type="stance",
-                                    tags=[stance, entity_type],
-                                )
-                                journals_created += 1
-                                # Link Agent → Journal
-                                journal_uid = journal_result.get("uid", "")
-                                agent_uid = agent_node_uids.get(name, "")
-                                if journal_uid and agent_uid:
-                                    mg_client.add_link(
-                                        from_uid=agent_uid,
-                                        to_uid=journal_uid,
-                                        edge_type="HAS_JOURNAL",
-                                        project_id=state.graph_id,
-                                    )
-                            except Exception as e:
-                                logger.warning(f"Failed to create Journal entry ({name}): {e}")
+                            journal_content = (
+                                f"{name} holds a {stance} stance "
+                                f"with sentiment bias {sentiment:.2f} "
+                                f"and influence weight {influence:.2f}"
+                            )
+                            batch_nodes.append({
+                                "label": journal_content[:100],
+                                "props": {
+                                    "_type": "Journal",
+                                    "content": journal_content,
+                                    "journal_type": "stance",
+                                    "tags": [stance, entity_type],
+                                },
+                                "agent_id": state.graph_id,
+                            })
+                            node_metadata.append({"kind": "journal", "name": name})
+
+                    # ── Single batch_create for all nodes ──
+                    agent_node_uids = {}
+                    journals_created = 0
+                    node_uids = []
+
+                    if batch_nodes:
+                        result = mg_client.batch_create(nodes=batch_nodes)
+                        node_uids = result.get("node_uids", []) if isinstance(result, dict) else []
+                        logger.info(f"Batch created {len(node_uids)} nodes ({len(batch_nodes)} requested)")
+
+                    # ── Parse UIDs and build edges ──
+                    batch_edges = []
+                    last_entity_uid = ""
+
+                    for i, meta in enumerate(node_metadata):
+                        uid = node_uids[i] if i < len(node_uids) else ""
+                        if not uid:
+                            continue
+
+                        if meta["kind"] == "entity":
+                            agent_node_uids[meta["name"]] = uid
+                            last_entity_uid = uid
+
+                        elif meta["kind"] == "journal":
+                            journals_created += 1
+                            # Link Agent → Journal (agent is the most recent entity before this journal)
+                            entity_uid = agent_node_uids.get(meta["name"], "")
+                            if entity_uid:
+                                batch_edges.append({
+                                    "from_uid": entity_uid,
+                                    "to_uid": uid,
+                                    "edge_type": "HAS_JOURNAL",
+                                })
+
+                    # ── Single batch_create for all edges ──
+                    if batch_edges:
+                        try:
+                            mg_client.batch_create(edges=batch_edges)
+                        except Exception as e:
+                            logger.warning(f"Batch HAS_JOURNAL edge creation failed: {e}")
 
                     logger.info(
                         f"Registered {len(agent_node_uids)} Agent nodes, "
-                        f"{journals_created} Journal entries"
+                        f"{journals_created} Journal entries "
+                        f"(2 API calls instead of ~{len(agent_node_uids) + journals_created * 2})"
                     )
 
                     # Save agent_node_uids mapping to simulation directory

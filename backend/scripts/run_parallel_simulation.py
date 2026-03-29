@@ -1057,9 +1057,82 @@ _graph_provider: Optional['GraphContextProvider'] = None
 _graph_agent_names: Dict[int, str] = {}
 # Current round tracker (mutable list for closure access)
 _graph_current_round: List[int] = [0]
+# Global user_id → agent name map (built from OASIS DB after env.reset)
+_user_id_to_agent_name: Dict[int, str] = {}
 
 # Save original to_text_prompt before any patching
 _original_to_text_prompt = SocialEnvironment.to_text_prompt
+# Whether the name-replacement monkey-patch has been applied
+_name_patch_applied = False
+
+
+def _build_user_id_name_map(db_path: str, agent_names: Dict[int, str]):
+    """Build user_id → agent name mapping from OASIS DB after agents sign up.
+
+    OASIS stores numeric user_ids in its post/comment tables. This mapping
+    lets us replace 'User 0' references with real entity names so agents
+    see who actually posted.
+
+    Also applies the name-replacement monkey-patch if graph context hasn't
+    already patched to_text_prompt (ensures names are always replaced).
+    """
+    global _user_id_to_agent_name, _name_patch_applied
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, agent_id FROM user")
+        for user_id, agent_id in cursor.fetchall():
+            if agent_id in agent_names:
+                _user_id_to_agent_name[user_id] = agent_names[agent_id]
+        conn.close()
+        if _user_id_to_agent_name:
+            print(f"[AgentNames] Built user_id→name map: {len(_user_id_to_agent_name)} agents")
+    except Exception as e:
+        print(f"[AgentNames] Warning: Failed to build user_id name map: {e}")
+
+    # If graph context patch hasn't been applied, apply name-only patch
+    if not _name_patch_applied:
+        async def _name_replacing_to_text_prompt(self, **kwargs):
+            original = await _original_to_text_prompt(self, **kwargs)
+            return _replace_user_ids_with_names(original)
+
+        SocialEnvironment.to_text_prompt = _name_replacing_to_text_prompt
+        _name_patch_applied = True
+        print("[AgentNames] Name-replacement monkey-patch applied")
+
+
+def _replace_user_ids_with_names(text: str) -> str:
+    """Replace 'User N' patterns in OASIS observation text with actual agent names.
+
+    Handles two patterns:
+    1. Prose: 'User 0 reposted a post from User 1' → 'Alice reposted a post from Bob'
+    2. JSON: '"user_id": 0' — injects '"user_name": "Alice"' after the user_id field
+    """
+    if not _user_id_to_agent_name:
+        return text
+
+    import re
+
+    # Replace "User N" in repost/quote prose strings
+    def _replace_user_ref(match):
+        uid = int(match.group(1))
+        name = _user_id_to_agent_name.get(uid)
+        return name if name else match.group(0)
+
+    text = re.sub(r'\bUser (\d+)\b', _replace_user_ref, text)
+
+    # Inject "user_name" after "user_id": N in JSON post dicts
+    def _inject_user_name(match):
+        uid = int(match.group(1))
+        name = _user_id_to_agent_name.get(uid)
+        if name:
+            return f'"user_id": {uid}, "user_name": "{name}"'
+        return match.group(0)
+
+    text = re.sub(r'"user_id":\s*(\d+)', _inject_user_name, text)
+
+    return text
 
 
 def init_graph_context(config: Dict[str, Any], simulation_dir: str,
@@ -1091,9 +1164,11 @@ def init_graph_context(config: Dict[str, Any], simulation_dir: str,
         _graph_provider = provider
         _graph_agent_names.update(agent_names)
 
-        # Apply monkey-patch — passes the observation text for semantic retrieval
+        # Apply monkey-patch — replaces user IDs with names & appends graph context
         async def _graph_enhanced_to_text_prompt(self, **kwargs):
             original = await _original_to_text_prompt(self, **kwargs)
+            # Replace "User 0" etc. with real agent names
+            original = _replace_user_ids_with_names(original)
             if not _graph_provider:
                 return original
             agent_id = getattr(self.action, 'agent_id', None) if hasattr(self, 'action') else None
@@ -1108,6 +1183,7 @@ def init_graph_context(config: Dict[str, Any], simulation_dir: str,
             return original
 
         SocialEnvironment.to_text_prompt = _graph_enhanced_to_text_prompt
+        _name_patch_applied = True  # graph patch subsumes name-only patch
         rel_count = sum(len(v) for v in provider.get_relationship_map().values())
         print(f"[GraphContext] Initialized: {rel_count} relationship edges, monkey-patch active")
         return provider
@@ -1261,6 +1337,9 @@ async def run_twitter_simulation(
 
     await result.env.reset()
     log_info("Environment started")
+
+    # Build user_id → agent name map so agents see real names instead of "User 0"
+    _build_user_id_name_map(db_path, agent_names)
 
     # Initialize graph context provider (first platform to call this wins)
     if _graph_provider is None:
@@ -1479,6 +1558,9 @@ async def run_reddit_simulation(
 
     await result.env.reset()
     log_info("Environment started")
+
+    # Build user_id → agent name map so agents see real names instead of "User 0"
+    _build_user_id_name_map(db_path, agent_names)
 
     # Initialize graph context provider (if not already done by Twitter)
     if _graph_provider is None:

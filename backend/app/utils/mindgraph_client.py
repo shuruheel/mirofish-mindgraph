@@ -32,9 +32,9 @@ class MindGraphClient:
     4. Concurrency control - limit concurrent API calls to avoid server overload
     """
 
-    MAX_RETRIES = 3
-    RETRY_DELAY = 2.0  # seconds, exponential backoff
-    MAX_CONCURRENT_CALLS = 5  # max concurrent API calls
+    MAX_RETRIES = 2
+    RETRY_DELAY = 1.0  # seconds, exponential backoff (1s, 2s)
+    MAX_CONCURRENT_CALLS = 3  # max concurrent API calls (CozoDB has single writer)
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.api_key = api_key or Config.MINDGRAPH_API_KEY
@@ -68,7 +68,16 @@ class MindGraphClient:
             self._semaphore.release()
 
     def _with_retry_inner(self, func, *args, operation_name: str = "API call", **kwargs) -> Any:
-        """Call wrapper with exponential backoff retry (internal method, no locking)"""
+        """Call wrapper with exponential backoff retry (internal method, no locking).
+
+        Retry strategy (CozoDB single-writer aware):
+        - 429 (write queue full): short delay (0.5s), retry once — server sheds excess immediately
+        - 503 (circuit breaker open): do NOT retry — server needs cooldown time
+        - 5xx (other server errors): standard exponential backoff
+        - 4xx (client errors, except 429): no retry
+        - Connection/timeout errors: standard exponential backoff
+        """
+        import random
         delay = self.RETRY_DELAY
         last_exception = None
 
@@ -77,27 +86,38 @@ class MindGraphClient:
                 return func(*args, **kwargs)
             except MindGraphError as e:
                 last_exception = e
-                # Don't retry client errors (4xx), except 429
+                # 503: circuit breaker open — don't retry, server needs recovery time
+                if e.status == 503:
+                    logger.warning(f"MindGraph {operation_name} circuit breaker open (503): {str(e)[:100]}")
+                    raise
+                # 4xx (except 429): client error, don't retry
                 if 400 <= e.status < 500 and e.status != 429:
                     logger.error(f"MindGraph {operation_name} client error ({e.status}): {e}")
                     raise
                 if attempt < self.MAX_RETRIES - 1:
+                    # 429: write queue full — short delay with jitter
+                    if e.status == 429:
+                        retry_delay = 0.5 + random.uniform(0, 0.5)
+                    else:
+                        # 5xx: exponential backoff with jitter
+                        retry_delay = delay + random.uniform(0, delay * 0.3)
                     logger.warning(
                         f"MindGraph {operation_name} attempt {attempt + 1} failed ({e.status}): "
-                        f"{str(e)[:100]}, retrying in {delay:.1f}s..."
+                        f"{str(e)[:100]}, retrying in {retry_delay:.1f}s..."
                     )
-                    time.sleep(delay)
+                    time.sleep(retry_delay)
                     delay *= 2
                 else:
                     logger.error(f"MindGraph {operation_name} still failed after {self.MAX_RETRIES} attempts: {e}")
             except (httpx.HTTPError, ConnectionError, TimeoutError, OSError) as e:
                 last_exception = e
                 if attempt < self.MAX_RETRIES - 1:
+                    retry_delay = delay + random.uniform(0, delay * 0.3)
                     logger.warning(
                         f"MindGraph {operation_name} connection attempt {attempt + 1} failed: "
-                        f"{str(e)[:100]}, retrying in {delay:.1f}s..."
+                        f"{str(e)[:100]}, retrying in {retry_delay:.1f}s..."
                     )
-                    time.sleep(delay)
+                    time.sleep(retry_delay)
                     delay *= 2
                 else:
                     logger.error(f"MindGraph {operation_name} still failed after {self.MAX_RETRIES} attempts: {e}")
@@ -726,61 +746,6 @@ class MindGraphClient:
         )
 
     # ═══════════════════════════════════════
-    # Agent post ingestion
-    # ═══════════════════════════════════════
-
-    def ingest_agent_post(self, agent_name: str, content: str, project_id: str,
-                          platform: str = "", round_num: int = 0) -> Dict[str, Any]:
-        """
-        Ingest agent post - let MindGraph auto-determine cognitive type
-
-        Return value includes extracted_node_uids for creating AUTHORED edges.
-        """
-        text = f"{agent_name}: {content}"
-        label = f"[{agent_name}] Round {round_num}"
-        if platform:
-            label = f"[{agent_name}] {platform} R{round_num}"
-        return self.ingest_chunk(
-            text=text,
-            project_id=project_id,
-            layers=["reality", "epistemic"],
-            label=label,
-            chunk_type="agent_post",
-        )
-
-    def add_claim(self, text: str, project_id: str, confidence: float = 0.6,
-                  evidence_text: Optional[str] = None,
-                  agent_name: Optional[str] = None) -> Dict[str, Any]:
-        """Add structured claim"""
-        claim_label = text[:100]
-        if agent_name:
-            claim_label = f"{agent_name}: {text[:80]}"
-
-        body: Dict[str, Any] = {
-            "claim": {
-                "label": claim_label,
-                "confidence": confidence,
-                "props": {
-                    "content": text,
-                    "claim_type": "simulation_opinion",
-                }
-            },
-            "agent_id": project_id,
-        }
-        if agent_name:
-            body["claim"]["props"]["proposed_by"] = agent_name
-        if evidence_text:
-            body["evidence"] = [{
-                "label": evidence_text[:100],
-                "props": {"description": evidence_text, "evidence_type": "referenced_content"}
-            }]
-
-        return self._with_retry(
-            self._mg.argue, **body,
-            operation_name=f"add claim({agent_name or 'unknown'}, confidence={confidence:.2f})",
-        )
-
-    # ═══════════════════════════════════════
     # Memory layer - Session management
     # ═══════════════════════════════════════
 
@@ -913,101 +878,6 @@ class MindGraphClient:
             },
             agent_id=project_id,
             operation_name=f"create goal({label[:30]})",
-        )
-
-    def record_decision(self, agent_name: str, description: str,
-                        chosen_option: str, rationale: str,
-                        project_id: str) -> Dict[str, Any]:
-        """
-        Record agent's observable decision
-
-        Uses SDK's 3-step convenience methods: open_decision -> add_option -> resolve_decision
-        """
-        # Step 1: Open decision
-        decision = self._with_retry(
-            self._mg.open_decision,
-            label=description[:100],
-            props={"description": description},
-            agent_id=project_id,
-            operation_name=f"open decision({agent_name})",
-        )
-
-        decision_uid = decision.get("uid", "")
-
-        if decision_uid:
-            # Step 2: Add chosen option
-            option_uid = ""
-            try:
-                option_result = self._with_retry(
-                    self._mg.add_option,
-                    decision_uid=decision_uid,
-                    label=chosen_option[:100],
-                    props={"description": chosen_option},
-                    agent_id=project_id,
-                    operation_name=f"add option({agent_name})",
-                )
-                option_uid = option_result.get("uid", "")
-            except Exception as e:
-                logger.warning(f"Failed to add decision option: {e}")
-
-            # Step 3: Resolve decision
-            if option_uid:
-                try:
-                    self._with_retry(
-                        self._mg.resolve_decision,
-                        decision_uid=decision_uid,
-                        chosen_option_uid=option_uid,
-                        summary=rationale,
-                        agent_id=project_id,
-                        operation_name=f"resolve decision({agent_name})",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to resolve decision: {e}")
-
-        return decision
-
-    # ═══════════════════════════════════════
-    # Memory layer - Journal
-    # ═══════════════════════════════════════
-
-    def create_journal(self, content: str, project_id: str,
-                       journal_type: str = "stance", tags: Optional[List[str]] = None,
-                       session_uid: Optional[str] = None) -> Dict[str, Any]:
-        """Create Journal memory entry (Memory layer)"""
-        return self._with_retry(
-            self._mg.journal,
-            label=content[:100],
-            props={
-                "content": content,
-                "journal_type": journal_type,
-                "tags": tags or [],
-            },
-            session_uid=session_uid,
-            agent_id=project_id,
-            operation_name=f"create Journal({journal_type})",
-        )
-
-    # ═══════════════════════════════════════
-    # Reality layer - Observation recording
-    # ═══════════════════════════════════════
-
-    def capture_observation(self, content: str, project_id: str,
-                            observation_type: str = "simulation_event") -> Dict[str, Any]:
-        """
-        Record factual observation - create Observation node (Reality layer)
-
-        Uses add_node with node_type="Observation" (low-level CRUD).
-        """
-        return self._with_retry(
-            self._mg.add_node,
-            label=content[:100],
-            node_type="Observation",
-            props={
-                "content": content,
-                "observation_type": observation_type,
-            },
-            agent_id=project_id,
-            operation_name=f"capture observation({observation_type})",
         )
 
     # ═══════════════════════════════════════

@@ -252,6 +252,52 @@ class EntityReader:
 
         return filtered, types_found, skipped, seen_uids
 
+    _STAKEHOLDER_QUERY_PROMPT = (
+        "Given this simulation scenario, list the key EXTERNAL stakeholder "
+        "groups who would react to or be affected by this situation. "
+        "Focus on parties OUTSIDE the primary subject — allies, adversaries, "
+        "regional powers, international organizations, and major world powers.\n\n"
+        "Return a single line of comma-separated names/keywords (countries, "
+        "organizations, leaders) that are NOT the primary subject but are "
+        "key stakeholders. Example format:\n"
+        "United States, China, India, European Union, United Nations, NATO, "
+        "Saudi Arabia, IMF\n\n"
+        "Scenario: {requirement}"
+    )
+
+    def _generate_stakeholder_query(self, requirement: str, keywords: str) -> str:
+        """Use LLM to generate a stakeholder-focused search query.
+
+        Returns a query targeting external parties (allies, adversaries,
+        international orgs) so Pass 2 finds entities DIFFERENT from the
+        topic-focused Pass 1.
+        """
+        try:
+            from .graph_context_provider import GraphContextProvider
+            client, model = GraphContextProvider._get_llm_client()
+            if not client:
+                return ""
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "user", "content": self._STAKEHOLDER_QUERY_PROMPT.format(requirement=requirement)},
+                ],
+                max_tokens=300,
+                temperature=0.3,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            # Strip any <think> tags from reasoning models
+            import re
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+            if content:
+                logger.info(f"Stakeholder query: {content[:120]}")
+                return content
+        except Exception as e:
+            logger.warning(f"Stakeholder query generation failed: {e}")
+
+        return ""
+
     def _select_entities_by_retrieval(
         self,
         graph_id: str,
@@ -263,7 +309,9 @@ class EntityReader:
 
         Two-pass approach:
         1. Topic query — finds entities semantically close to the scenario
-        2. Actor query — specifically targets people, leaders, organizations
+        2. Stakeholder query — uses LLM to identify external parties (allies,
+           adversaries, international orgs) and searches for those specifically,
+           ensuring entity diversity across all sides of the scenario
 
         Uses POST /retrieve with action="semantic" and node_types=["Entity"].
         Searches the full org graph (no agent_id scoping) intentionally.
@@ -278,7 +326,7 @@ class EntityReader:
         all_types: Set[str] = set()
         search_k = max(200, max_entities * 8)
 
-        # Pass 1: topic-based search
+        # Pass 1: topic-based search (finds entities close to the primary subject)
         entities_1, types_1, _, seen_uids = self._semantic_search_entities(
             query=keywords,
             k=search_k,
@@ -289,23 +337,25 @@ class EntityReader:
         all_types.update(types_1)
         logger.info(f"Pass 1 (topic): {len(entities_1)} agent-compatible entities")
 
-        # Pass 2: actor-focused search if we don't have enough yet
-        # Query is designed to find diverse actors across all sides of the scenario
+        # Pass 2: stakeholder search — query for external parties by name
         if len(all_entities) < max_entities:
-            actor_query = (
-                f"key people leaders officials organizations governments military "
-                f"agencies from all sides and perspectives — including allies, "
-                f"adversaries, mediators, and international observers — involved in {keywords}"
-            )
+            stakeholder_query = self._generate_stakeholder_query(simulation_requirement, keywords)
+            if not stakeholder_query:
+                # Fallback to static query if LLM call fails
+                stakeholder_query = (
+                    f"key leaders officials organizations governments from all sides "
+                    f"— allies, adversaries, mediators, international observers — "
+                    f"involved in {keywords}"
+                )
             entities_2, types_2, _, seen_uids = self._semantic_search_entities(
-                query=actor_query,
+                query=stakeholder_query,
                 k=search_k,
                 seen_uids=seen_uids,
                 defined_entity_types=defined_entity_types,
             )
             all_entities.extend(entities_2)
             all_types.update(types_2)
-            logger.info(f"Pass 2 (actors): {len(entities_2)} additional agent-compatible entities")
+            logger.info(f"Pass 2 (stakeholders): {len(entities_2)} additional agent-compatible entities")
 
         if not all_entities:
             logger.warning("Semantic search found 0 agent-compatible entities across both passes")

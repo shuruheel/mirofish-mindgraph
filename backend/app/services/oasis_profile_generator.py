@@ -845,12 +845,15 @@ Important:
                 existing_profiles = [p for p in profiles if p is not None]
                 if not existing_profiles:
                     return
-                
+
                 try:
+                    # Atomic write: write to temp file then rename to avoid
+                    # corrupted JSON when readers poll during writes
+                    tmp_path = realtime_output_path + ".tmp"
                     if output_platform == "reddit":
                         # Reddit JSON format
                         profiles_data = [p.to_reddit_format() for p in existing_profiles]
-                        with open(realtime_output_path, 'w', encoding='utf-8') as f:
+                        with open(tmp_path, 'w', encoding='utf-8') as f:
                             json.dump(profiles_data, f, ensure_ascii=False, indent=2)
                     else:
                         # Twitter CSV format
@@ -858,12 +861,18 @@ Important:
                         profiles_data = [p.to_twitter_format() for p in existing_profiles]
                         if profiles_data:
                             fieldnames = list(profiles_data[0].keys())
-                            with open(realtime_output_path, 'w', encoding='utf-8', newline='') as f:
+                            with open(tmp_path, 'w', encoding='utf-8', newline='') as f:
                                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                                 writer.writeheader()
                                 writer.writerows(profiles_data)
+                    os.replace(tmp_path, realtime_output_path)
                 except Exception as e:
                     logger.warning(f"Real-time profile save failed: {e}")
+                    # Clean up temp file on failure
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
         
         def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
             """Worker function for generating a single profile"""

@@ -226,9 +226,31 @@ class MindGraphClient:
         """Semantic search - degrades to hybrid (semantic requires embedding config)"""
         return self.search_hybrid(query, project_id, limit)
 
+    def semantic_search(self, query: str, k: int = 50,
+                        node_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        Semantic node search via POST /retrieve with action="semantic".
+
+        Single HNSW query filtered by node_type. Returns nodes ranked by
+        cosine similarity — no chunk tracing, no graph traversal.
+        """
+        body: Dict[str, Any] = {
+            "action": "semantic",
+            "query": query,
+            "k": k,
+        }
+        if node_types is not None:
+            body["node_types"] = node_types
+        return self._with_retry(
+            self._mg.retrieve,
+            **body,
+            operation_name=f"semantic search(query={query[:30]}..., k={k})",
+        )
+
     def retrieve_context(self, query: str, project_id: Optional[str] = None,
                          k: int = 5, depth: int = 1,
-                         include_chunks: Optional[bool] = None) -> Dict[str, Any]:
+                         include_chunks: Optional[bool] = None,
+                         node_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Graph-augmented RAG retrieval
 
@@ -246,6 +268,8 @@ class MindGraphClient:
             }
             if include_chunks is not None:
                 body["include_chunks"] = include_chunks
+            if node_types is not None:
+                body["node_types"] = node_types
             return self._with_retry(
                 self._mg._request, "POST", "/retrieve/context", body,
                 operation_name=f"RAG retrieval(query={query[:30]}..., k={k})",
@@ -255,6 +279,8 @@ class MindGraphClient:
             kwargs: Dict[str, Any] = {"query": query, "k": k, "depth": depth}
             if include_chunks is not None:
                 kwargs["include_chunks"] = include_chunks
+            if node_types is not None:
+                kwargs["node_types"] = node_types
             return self._with_retry(
                 self._mg.retrieve_context,
                 **kwargs,

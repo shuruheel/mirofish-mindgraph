@@ -165,6 +165,200 @@ class EntityReader:
             logger.warning(f"Failed to get edges for node {node_uuid}: {str(e)}")
             return []
 
+    @staticmethod
+    def _get_keywords(requirement: str) -> str:
+        """Summarize a simulation requirement into English keywords."""
+        try:
+            from .graph_context_provider import GraphContextProvider
+            keywords = GraphContextProvider._summarize_feed(requirement)
+            if keywords:
+                return keywords
+        except Exception as e:
+            logger.warning(f"Requirement summarization error: {e}")
+        return requirement[:200]
+
+    # Entity types that can act as simulation agents
+    _AGENT_TYPE_KEYWORDS = {
+        "person", "human", "org", "organization", "organisation",
+        "group", "government", "military", "party", "agency",
+        "institution", "company", "corporation", "alliance", "coalition",
+        "committee", "council", "ministry", "department", "force",
+    }
+
+    @classmethod
+    def _is_agent_compatible(cls, entity_type_str: str) -> bool:
+        if not entity_type_str:
+            return False
+        lower = entity_type_str.lower()
+        return any(kw in lower for kw in cls._AGENT_TYPE_KEYWORDS)
+
+    def _semantic_search_entities(
+        self,
+        query: str,
+        k: int,
+        seen_uids: Set[str],
+        defined_entity_types: Optional[List[str]] = None,
+    ) -> tuple:
+        """Run one semantic search pass. Returns (filtered_entities, entity_types_found, skipped_types, new_seen_uids)."""
+        try:
+            results = self.client.semantic_search(
+                query=query,
+                k=k,
+                node_types=["Entity"],
+            )
+        except Exception as e:
+            logger.warning(f"Semantic search failed for query '{query[:60]}...': {e}")
+            return [], set(), {}, seen_uids
+
+        # /retrieve returns [{"node": {...}, "score": ...}, ...] — unwrap
+        nodes = [r.get("node", r) if isinstance(r, dict) and "node" in r else r for r in results]
+        logger.info(f"Semantic search returned {len(nodes)} Entity nodes for query '{query[:60]}...'")
+
+        filtered = []
+        types_found: Set[str] = set()
+        skipped: Dict[str, int] = {}
+
+        for mg_node in nodes:
+            uid = mg_node.get("uid", "")
+            if not uid or uid in seen_uids:
+                continue
+            seen_uids.add(uid)
+
+            entity_type = mg_node.get("entity_type", "") or mg_node.get("props", {}).get("entity_type", "")
+
+            if defined_entity_types:
+                if entity_type not in defined_entity_types:
+                    continue
+            elif not self._is_agent_compatible(entity_type):
+                skipped[entity_type] = skipped.get(entity_type, 0) + 1
+                continue
+
+            types_found.add(entity_type)
+            node = self._normalize_node(mg_node)
+            entity_labels = list(node["labels"])
+            if entity_type and entity_type not in entity_labels:
+                entity_labels.append(entity_type)
+
+            filtered.append(EntityNode(
+                uuid=node["uuid"],
+                name=node["name"],
+                labels=entity_labels,
+                summary=node["summary"],
+                attributes=node["attributes"],
+            ))
+
+        if skipped:
+            logger.info(f"Skipped non-agent types: {dict(sorted(skipped.items(), key=lambda x: -x[1]))}")
+
+        return filtered, types_found, skipped, seen_uids
+
+    def _select_entities_by_retrieval(
+        self,
+        graph_id: str,
+        simulation_requirement: str,
+        max_entities: int,
+        defined_entity_types: Optional[List[str]] = None,
+    ) -> Optional['FilteredEntities']:
+        """Select relevant entities using MindGraph semantic search.
+
+        Two-pass approach:
+        1. Topic query — finds entities semantically close to the scenario
+        2. Actor query — specifically targets people, leaders, organizations
+
+        Uses POST /retrieve with action="semantic" and node_types=["Entity"].
+        Searches the full org graph (no agent_id scoping) intentionally.
+
+        Returns None if both passes fail, signaling caller to use fallback.
+        """
+        keywords = self._get_keywords(simulation_requirement)
+        logger.info(f"Semantic entity search: query='{keywords[:80]}...', max={max_entities}")
+
+        seen_uids: Set[str] = set()
+        all_entities: list = []
+        all_types: Set[str] = set()
+        search_k = max(200, max_entities * 8)
+
+        # Pass 1: topic-based search
+        entities_1, types_1, _, seen_uids = self._semantic_search_entities(
+            query=keywords,
+            k=search_k,
+            seen_uids=seen_uids,
+            defined_entity_types=defined_entity_types,
+        )
+        all_entities.extend(entities_1)
+        all_types.update(types_1)
+        logger.info(f"Pass 1 (topic): {len(entities_1)} agent-compatible entities")
+
+        # Pass 2: actor-focused search if we don't have enough yet
+        # Query is designed to find diverse actors across all sides of the scenario
+        if len(all_entities) < max_entities:
+            actor_query = (
+                f"key people leaders officials organizations governments military "
+                f"agencies from all sides and perspectives — including allies, "
+                f"adversaries, mediators, and international observers — involved in {keywords}"
+            )
+            entities_2, types_2, _, seen_uids = self._semantic_search_entities(
+                query=actor_query,
+                k=search_k,
+                seen_uids=seen_uids,
+                defined_entity_types=defined_entity_types,
+            )
+            all_entities.extend(entities_2)
+            all_types.update(types_2)
+            logger.info(f"Pass 2 (actors): {len(entities_2)} additional agent-compatible entities")
+
+        if not all_entities:
+            logger.warning("Semantic search found 0 agent-compatible entities across both passes")
+            return None
+
+        # Dedup by name, keep first (highest similarity from earlier pass)
+        best_by_name: Dict[str, 'EntityNode'] = {}
+        for entity in all_entities:
+            if entity.name not in best_by_name:
+                best_by_name[entity.name] = entity
+        deduped = list(best_by_name.values())
+
+        selected = deduped[:max_entities]
+
+        # Enrich selected entities with edges
+        if selected:
+            try:
+                edges = self.client.get_edges_batch([e.uuid for e in selected])
+                for edge in edges:
+                    norm_edge = self._normalize_edge(edge)
+                    src, tgt = norm_edge["source_node_uuid"], norm_edge["target_node_uuid"]
+                    for entity in selected:
+                        if entity.uuid == src:
+                            entity.related_edges.append({
+                                "direction": "outgoing",
+                                "edge_name": norm_edge["name"],
+                                "fact": norm_edge["fact"],
+                                "target_node_uuid": tgt,
+                            })
+                        elif entity.uuid == tgt:
+                            entity.related_edges.append({
+                                "direction": "incoming",
+                                "edge_name": norm_edge["name"],
+                                "fact": norm_edge["fact"],
+                                "source_node_uuid": src,
+                            })
+            except Exception as e:
+                logger.warning(f"Edge enrichment failed: {e}")
+
+        logger.info(
+            f"Semantic selection complete: {len(all_entities)} agent-compatible → "
+            f"{len(deduped)} deduped → {len(selected)} selected"
+        )
+        if selected:
+            logger.info(f"  Top entities: {[e.name for e in selected[:10]]}")
+
+        return FilteredEntities(
+            entities=selected,
+            entity_types=all_types,
+            total_count=len(all_entities),
+            filtered_count=len(selected),
+        )
+
     def _rank_by_relevance(
         self,
         entities: List['EntityNode'],
@@ -184,17 +378,7 @@ class EntityReader:
         entity_names = {e.name for e in entities if len(e.name) >= 3}
         total = len(entities)
 
-        # Step 1: Summarize requirement into keywords
-        try:
-            from .graph_context_provider import GraphContextProvider
-            keywords = GraphContextProvider._summarize_feed(requirement)
-            if not keywords:
-                keywords = requirement[:50]
-                logger.info("Requirement summarization failed, using first 50 chars of raw text")
-        except Exception as e:
-            keywords = requirement[:50]
-            logger.warning(f"Requirement summarization error: {e}")
-
+        keywords = self._get_keywords(requirement)
         logger.info(f"Entity relevance ranking: query='{keywords[:80]}...'")
 
         # Step 2: Retrieve epistemic context
@@ -204,7 +388,7 @@ class EntityReader:
             mg = MindGraph(
                 os.environ.get("MINDGRAPH_BASE_URL", "https://api.mindgraph.cloud"),
                 api_key=os.environ.get("MINDGRAPH_API_KEY", ""),
-                timeout=120,
+                timeout=300,
             )
             result = mg.retrieve_context(query=keywords, k=20, layer="epistemic")
             chunks = result.get("chunks", [])
@@ -285,6 +469,17 @@ class EntityReader:
             FilteredEntities: Filtered entity collection
         """
         logger.info(f"Starting entity filtering for graph {graph_id} (source={source})...")
+
+        # For large MindGraph graphs: use retrieval-first approach instead of
+        # loading all nodes (which is slow and capped at 2000 for graphs with
+        # tens of thousands of nodes).
+        if source == "mindgraph" and max_entities > 0 and simulation_requirement:
+            result = self._select_entities_by_retrieval(
+                graph_id, simulation_requirement, max_entities, defined_entity_types
+            )
+            if result is not None:
+                return result
+            logger.info("Semantic entity search returned None, falling back to paginated approach")
 
         # Get nodes
         # MindGraph mode: only get Entity type nodes (server-side filtering, significantly reducing data volume)
@@ -367,18 +562,6 @@ class EntityReader:
                 type_counts[et] = type_counts.get(et, 0) + 1
             logger.info(f"Entity type distribution: {dict(sorted(type_counts.items(), key=lambda x: -x[1]))}")
 
-        # Only person/human and organization entities can become agent personas.
-        # MindGraph entity_type docs: "Type of entity (person, org, technology, etc.)"
-        # — concepts, events, places, technologies etc. are also stored as Entity nodes.
-        _AGENT_TYPE_KEYWORDS = {"person", "human", "org"}
-
-        def _is_agent_compatible(entity_type_str: str) -> bool:
-            """Check if entity_type is a person or organization."""
-            if not entity_type_str:
-                return False
-            lower = entity_type_str.lower()
-            return any(kw in lower for kw in _AGENT_TYPE_KEYWORDS)
-
         filtered_entities = []
         entity_types_found = set()
         skipped_types: Dict[str, int] = {}
@@ -392,8 +575,8 @@ class EntityReader:
                 props_entity_type = attributes.get("entity_type", "")
                 entity_type = props_entity_type or "Entity"
 
-                # Filter: only keep person/organization entities for agent simulation
-                if not defined_entity_types and not _is_agent_compatible(entity_type):
+                # Filter: only keep agent-compatible entities for simulation
+                if not defined_entity_types and not self._is_agent_compatible(entity_type):
                     skipped_types[entity_type] = skipped_types.get(entity_type, 0) + 1
                     continue
             else:

@@ -560,25 +560,36 @@ def prepare_simulation():
         parallel_profile_count = data.get('parallel_profile_count', 20)
         max_agents = data.get('max_agents', 27)  # Select top N by graph connectivity, default 27
         
-        # ========== Synchronously get entity count (before background task starts) ==========
-        # So the frontend can immediately get expected Agent count after calling prepare
-        try:
-            logger.info(f"Synchronously getting entity count: graph_id={state.graph_id}, source={project_source}")
-            reader = EntityReader()
-            # Quick entity read (no edge info needed, just counting)
-            filtered_preview = reader.filter_defined_entities(
-                graph_id=state.graph_id,
-                defined_entity_types=entity_types_list,
-                enrich_with_edges=False,  # Skip edge info for faster speed
-                source=project_source
-            )
-            # Save entity count to state (for frontend immediate access)
-            state.entities_count = filtered_preview.filtered_count
-            state.entity_types = list(filtered_preview.entity_types)
-            logger.info(f"Expected entity count: {filtered_preview.filtered_count}, Types: {filtered_preview.entity_types}")
-        except Exception as e:
-            logger.warning(f"Failed to get entity count synchronously (will retry in background task): {e}")
-            # Failure does not affect subsequent flow, background task will re-fetch
+        # ========== Set expected agent count (before background task starts) ==========
+        # Use max_agents as the expected count — this is what will actually be generated.
+        # The background task will update with the actual count once filtering completes.
+        state.entities_count = max_agents
+        state.entity_types = []
+
+        # For upload mode, get entity types synchronously for UI display.
+        # For mindgraph mode, skip — loading all nodes from a large graph is slow
+        # (17+ seconds for 60k nodes, capped at 2000). The background task will
+        # set entity_types after retrieval-first selection completes.
+        if project_source != "mindgraph":
+            try:
+                logger.info(f"Synchronously getting entity types: graph_id={state.graph_id}, source={project_source}")
+                reader = EntityReader()
+                filtered_preview = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    defined_entity_types=entity_types_list,
+                    enrich_with_edges=False,
+                    source=project_source
+                )
+                state.entity_types = list(filtered_preview.entity_types)
+                # Cap expected count: actual agents = min(max_agents, available entities)
+                if filtered_preview.filtered_count > 0:
+                    state.entities_count = min(max_agents, filtered_preview.filtered_count)
+                logger.info(f"Expected agent count: {state.entities_count}, Types: {filtered_preview.entity_types}")
+            except Exception as e:
+                logger.warning(f"Failed to get entity types synchronously (will retry in background task): {e}")
+                logger.info(f"Using max_agents={max_agents} as expected count")
+        else:
+            logger.info(f"MindGraph mode: skipping synchronous preview (background task will set entity types)")
         
         # Create async task
         task_manager = TaskManager()

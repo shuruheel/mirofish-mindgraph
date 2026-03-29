@@ -117,7 +117,7 @@ def main():
 
         nodes_to_delete.append({
             "uid": node.get("uid") or node.get("uuid"),
-            "name": node.get("name", "?"),
+            "name": node.get("label") or node.get("name") or attrs.get("content", "")[:80] or "?",
             "type": node_type,
             "created_at": node.get("created_at"),
         })

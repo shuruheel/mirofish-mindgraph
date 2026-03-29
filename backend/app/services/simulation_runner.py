@@ -440,6 +440,7 @@ class SimulationRunner:
                 # Load agent node UID mapping (created by simulation_manager.prepare_simulation Phase 4).
                 # Phase 4 runs after profile generation, so the file may not exist yet
                 # if the user started the simulation before prepare fully completed.
+                # The GraphMemoryUpdater has hot-reload logic to pick up the file later.
                 agent_node_uids = {}
                 uids_path = os.path.join(sim_dir, "agent_node_uids.json")
                 if os.path.exists(uids_path):
@@ -447,17 +448,7 @@ class SimulationRunner:
                         agent_node_uids = json.load(f)
                     logger.info(f"Loaded {len(agent_node_uids)} agent node mappings")
                 else:
-                    # Wait briefly for prepare Phase 4 to finish writing the file
-                    import time as _time
-                    for attempt in range(6):
-                        _time.sleep(5)
-                        if os.path.exists(uids_path):
-                            with open(uids_path, 'r', encoding='utf-8') as f:
-                                agent_node_uids = json.load(f)
-                            logger.info(f"Loaded {len(agent_node_uids)} agent node mappings (after {(attempt+1)*5}s wait)")
-                            break
-                    if not agent_node_uids:
-                        logger.warning(f"agent_node_uids.json not found after 30s — graph writeback will lack agent node links")
+                    logger.info(f"agent_node_uids.json not yet available — updater will hot-load when file appears")
 
                 GraphMemoryManager.create_updater(
                     simulation_id, graph_id,

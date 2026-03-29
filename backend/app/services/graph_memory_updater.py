@@ -219,6 +219,7 @@ class GraphMemoryUpdater:
         # Agent name -> MindGraph Agent node UID mapping
         # Used to create Agent->extracted node AUTHORED edges after ingestion
         self._agent_node_uids: Dict[str, str] = agent_node_uids or {}
+        self._agent_uids_loaded: bool = bool(self._agent_node_uids)
 
         # MindGraph session (for tracking simulation lifecycle)
         self._session_uid: Optional[str] = None
@@ -245,6 +246,29 @@ class GraphMemoryUpdater:
         self._skipped_count = 0
 
         logger.info(f"GraphMemoryUpdater initialized: graph_id={graph_id}, source={source}, batch_size={self.BATCH_SIZE}")
+
+    def _try_load_agent_uids(self):
+        """Hot-reload agent_node_uids.json from disk if we started with an empty mapping.
+
+        Phase 4 of prepare_simulation writes the file after profile generation,
+        which can take minutes. If the simulation starts before Phase 4 finishes,
+        the updater is initialized with an empty dict. This method retries on
+        each batch send until the file appears.
+        """
+        if self._agent_uids_loaded or not self._simulation_dir:
+            return
+        uids_path = os.path.join(self._simulation_dir, "agent_node_uids.json")
+        if not os.path.exists(uids_path):
+            return
+        try:
+            with open(uids_path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if loaded:
+                self._agent_node_uids = loaded
+                self._agent_uids_loaded = True
+                logger.info(f"Hot-loaded {len(loaded)} agent node UIDs from disk")
+        except Exception as e:
+            logger.debug(f"Failed to hot-load agent_node_uids.json: {e}")
 
     def _get_platform_display_name(self, platform: str) -> str:
         return self.PLATFORM_DISPLAY_NAMES.get(platform.lower(), platform)
@@ -401,6 +425,9 @@ class GraphMemoryUpdater:
         """
         if not activities:
             return
+
+        # Hot-reload agent UIDs if we started before Phase 4 completed
+        self._try_load_agent_uids()
 
         display_name = self._get_platform_display_name(platform)
         trace_texts = []

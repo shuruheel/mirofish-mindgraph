@@ -2,21 +2,12 @@
 
 <img src="./static/image/MiroFish_logo_compressed.jpeg" alt="MiroFish Logo" width="75%"/>
 
-<a href="https://trendshift.io/repositories/16144" target="_blank"><img src="https://trendshift.io/api/badge/repositories/16144" alt="666ghj%2FMiroFish | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
 *A Swarm Intelligence Engine for Predictive Simulation*
 
-<a href="https://www.shanda.com/" target="_blank"><img src="./static/image/shanda_logo.png" alt="666ghj%2MiroFish | Shanda" height="40"/></a>
-
-[![GitHub Stars](https://img.shields.io/github/stars/666ghj/MiroFish?style=flat-square&color=DAA520)](https://github.com/666ghj/MiroFish/stargazers)
-[![GitHub Watchers](https://img.shields.io/github/watchers/666ghj/MiroFish?style=flat-square)](https://github.com/666ghj/MiroFish/watchers)
-[![GitHub Forks](https://img.shields.io/github/forks/666ghj/MiroFish?style=flat-square)](https://github.com/666ghj/MiroFish/network)
-[![Docker](https://img.shields.io/badge/Docker-Build-2496ED?style=flat-square&logo=docker&logoColor=white)](https://hub.docker.com/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/666ghj/MiroFish)
+<a href="https://www.shanda.com/" target="_blank"><img src="./static/image/shanda_logo.png" alt="Shanda Group" height="40"/></a>
 
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](http://discord.gg/ePf5aPaHnA)
 [![X](https://img.shields.io/badge/X-Follow-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/mirofish_ai)
-[![Instagram](https://img.shields.io/badge/Instagram-Follow-E4405F?style=flat-square&logo=instagram&logoColor=white)](https://www.instagram.com/mirofish_ai/)
 
 </div>
 
@@ -29,21 +20,19 @@
 
 ## MindGraph Integration
 
-This fork replaces the original Zep Cloud memory layer with **[MindGraph Cloud](https://mindgraph.cloud)**, a structured knowledge graph with cognitive retrieval. The difference is fundamental — Zep stores flat memory entries retrieved by vector similarity, while MindGraph builds a richly connected epistemic graph that agents reason over.
+This fork replaces the original Zep Cloud memory layer with **[MindGraph Cloud](https://mindgraph.cloud)**. Both provide knowledge graphs, but MindGraph's multi-layer cognitive architecture changes what the system can represent and reason over.
 
-**What MindGraph provides that Zep cannot:**
+**Key differences from the Zep-based original:**
 
-| Capability | MindGraph | Zep |
+| Capability | MindGraph | Zep (original) |
 |---|---|---|
-| **Epistemic graph structure** | 6-layer cognitive architecture (entities, relationships, observations, epistemic states, temporal facts, summaries) | Flat fact/memory list |
-| **Ontology-driven extraction** | LLM generates a domain-specific ontology per project; graph construction follows it | Generic entity extraction |
-| **GraphRAG retrieval** | Multi-hop reasoning across entity relationships and temporal facts | Single-hop vector similarity |
-| **Salience decay** | Facts fade over time like real memory — recent observations outweigh old ones | All memories equally weighted |
-| **Live simulation writeback** | Agent actions (claims, decisions, anomalies) are written to the graph in real-time during simulation | Post-hoc memory storage |
-| **Structured cognitive tools** | InsightForge (multi-hop analysis), PanoramaSearch (graph overview), Interview (agent querying), QuickSearch — all operating over the post-simulation graph | Basic search |
-| **Project isolation** | Namespace isolation via `agent_id` — one API key, multiple independent project graphs | Separate collections |
+| **Graph structure** | 6-layer cognitive architecture — entities, relationships, and typed epistemic nodes (Claims, Evidence, Hypotheses, Decisions, Observations) across Reality, Epistemic, Intent, Action, Agent, and Memory layers | 3-tier structure — episodes, entity/relationship subgraph, and community clusters |
+| **Simulation writeback** | Typed node creation — agent posts become Journal nodes, decisions become Decision/Option nodes, anomalies are flagged, all linked to Agent nodes with explicit edges | Uniform text ingestion — all activity is converted to plain text and fed through the same episode-to-graph pipeline |
+| **Agent context during simulation** | `GraphContextProvider` injects per-round graph context into agents: entity relationships, claims, and related agents' recent activity, retrieved via epistemic layer queries | Graph data is used post-simulation only, by the Report Agent for retrieval |
+| **Entity selection** | Relevance-based ranking using epistemic retrieval — selects the most relevant entities for the simulation scenario | Returns all entities matching the ontology |
+| **Retrieval** | Hybrid search (BM25 + semantic + RRF) plus `retrieve_context()` for graph-augmented RAG with layer filtering | Hybrid search with cross-encoder reranking, community-aware retrieval |
 
-In practice, this means the ReportAgent can answer questions like *"What chain of events led Agent X to change their stance?"* by traversing relationship chains in the graph — something impossible with flat memory retrieval.
+In practice, this means agents are graph-aware *during* simulation — their actions create structured nodes that the ReportAgent can later traverse to answer questions like *"What chain of events led Agent X to change their stance?"*
 
 ## Workflow
 
@@ -55,7 +44,7 @@ MiroFish supports two launch modes:
 
 1. **Graph Construction** — LLM generates a domain-specific ontology, then chunks and extracts entities/relationships into MindGraph's epistemic graph
 2. **Environment Setup** — Entities are read from the graph; GraphRAG-enhanced context drives LLM persona generation; simulation parameters are auto-configured
-3. **Simulation** — Dual-platform parallel simulation (Twitter + Reddit via OASIS); agent activity is written back to MindGraph in real-time with salience decay modeling memory fading
+3. **Simulation** — Dual-platform parallel simulation (Twitter + Reddit via OASIS); agent activity is written back to MindGraph as typed nodes in real-time
 4. **Report Generation** — ReportAgent queries the post-simulation graph through MindGraph's cognitive retrieval tools (InsightForge, PanoramaSearch, Interview, QuickSearch)
 5. **Deep Interaction** — Chat with any individual agent in the simulated world, or continue querying the ReportAgent
 
@@ -129,69 +118,18 @@ docker compose up -d   # Pull and start
 
 Reads `.env` from the project root. Maps ports `3000` (frontend) and `5001` (backend).
 
-## Live Demo
-
-Try a pre-built prediction simulation: [mirofish-live-demo](https://666ghj.github.io/mirofish-demo/)
-
-## Screenshots
-
-<div align="center">
-<table>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图1.png" alt="Screenshot 1" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图2.png" alt="Screenshot 2" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图3.png" alt="Screenshot 3" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图4.png" alt="Screenshot 4" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图5.png" alt="Screenshot 5" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图6.png" alt="Screenshot 6" width="100%"/></td>
-</tr>
-</table>
-</div>
-
-## Demo Videos
-
-### Wuhan University Public Opinion Simulation
-
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1VYBsBHEMY/" target="_blank"><img src="./static/image/武大模拟演示封面.png" alt="MiroFish Demo Video" width="75%"/></a>
-
-Full demo of a public opinion prediction generated with BettaFish
-</div>
-
-### Dream of the Red Chamber — Lost Ending Prediction
-
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1cPk3BBExq" target="_blank"><img src="./static/image/红楼梦模拟推演封面.jpg" alt="MiroFish Demo Video" width="75%"/></a>
-
-MiroFish predicts the lost ending based on the first 80 chapters
-</div>
-
 ## Acknowledgments
 
 **MiroFish has received strategic support and incubation from Shanda Group.**
 
 - Simulation engine powered by **[OASIS](https://github.com/camel-ai/oasis)** (CAMEL-AI)
-- Knowledge graph and cognitive memory powered by **[MindGraph Cloud](https://mindgraph.cloud)** — replacing the original Zep Cloud integration with a structured epistemic graph, GraphRAG retrieval, salience decay, and real-time simulation writeback
+- Knowledge graph and cognitive memory powered by **[MindGraph Cloud](https://mindgraph.cloud)** — replacing the original Zep Cloud integration with a multi-layer cognitive graph, typed simulation writeback, and real-time agent context injection
 
 ## Contact
 
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](http://discord.gg/ePf5aPaHnA) [![X](https://img.shields.io/badge/X-Follow-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/mirofish_ai)
 
 The MiroFish team is hiring (full-time and internships). If you're interested in multi-agent simulation and LLM applications, reach out at **mirofish@shanda.com**.
-
-## Star History
-
-<a href="https://www.star-history.com/#666ghj/MiroFish&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=666ghj/MiroFish&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=666ghj/MiroFish&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=666ghj/MiroFish&type=date&legend=top-left" />
- </picture>
-</a>
 
 ## License
 

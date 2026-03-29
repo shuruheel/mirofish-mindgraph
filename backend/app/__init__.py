@@ -2,6 +2,7 @@
 MiroFish Backend - Flask应用工厂
 """
 
+import logging
 import os
 import warnings
 
@@ -39,6 +40,13 @@ def create_app(config_class=Config):
         logger.info("MiroFish Backend 启动中...")
         logger.info("=" * 50)
     
+    # Suppress high-frequency polling requests from Werkzeug logs
+    class _SuppressPollingFilter(logging.Filter):
+        def filter(self, record):
+            msg = record.getMessage()
+            return 'run-status' not in msg
+    logging.getLogger('werkzeug').addFilter(_SuppressPollingFilter())
+
     # 启用CORS
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     

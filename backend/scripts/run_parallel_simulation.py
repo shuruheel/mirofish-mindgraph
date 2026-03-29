@@ -1666,6 +1666,12 @@ async def main():
         help='最大模拟轮数（可选，用于截断过长的模拟）'
     )
     parser.add_argument(
+        '--max-agents',
+        type=int,
+        default=0,
+        help='最大Agent数量（按图谱连接度排序取top N，0=不限制）'
+    )
+    parser.add_argument(
         '--no-wait',
         action='store_true',
         default=False,
@@ -1714,8 +1720,63 @@ async def main():
         log_manager.info(f"  - 最大轮数限制: {args.max_rounds}")
         if args.max_rounds < config_total_rounds:
             log_manager.info(f"  - 实际执行轮数: {args.max_rounds} (已截断)")
-    log_manager.info(f"  - Agent数量: {len(config.get('agent_configs', []))}")
-    
+    agent_configs = config.get('agent_configs', [])
+    log_manager.info(f"  - Agent数量: {len(agent_configs)}")
+
+    # Filter agents by graph connectivity if --max-agents specified
+    if args.max_agents > 0 and len(agent_configs) > args.max_agents:
+        try:
+            from app.utils.mindgraph_client import MindGraphClient
+            mg = MindGraphClient()
+            all_nodes = mg.list_all_graph_nodes(node_type="Entity", max_items=3000)
+            # Build name → edge count using get_edges_batch
+            entity_uids = [n.get("uid", "") for n in all_nodes if n.get("uid")]
+            edges = mg.get_edges_batch(entity_uids) if entity_uids else []
+            # Count edges per UID
+            uid_edge_count = {}
+            for e in edges:
+                for uid_key in ("from_uid", "to_uid"):
+                    uid = e.get(uid_key, "")
+                    uid_edge_count[uid] = uid_edge_count.get(uid, 0) + 1
+            # Map entity name → edge count
+            name_to_edges = {}
+            for n in all_nodes:
+                name = n.get("label", "")
+                uid = n.get("uid", "")
+                if name and uid:
+                    name_to_edges[name] = uid_edge_count.get(uid, 0)
+            # Rank agent_configs by connectivity
+            for ac in agent_configs:
+                ac["_edge_count"] = name_to_edges.get(ac.get("entity_name", ""), 0)
+            agent_configs.sort(key=lambda x: x["_edge_count"], reverse=True)
+            removed = agent_configs[args.max_agents:]
+            agent_configs = agent_configs[:args.max_agents]
+            # Clean up temp key and reassign sequential agent IDs
+            old_to_new_id = {}
+            for i, ac in enumerate(agent_configs):
+                old_id = ac.get("agent_id", i)
+                ac.pop("_edge_count", None)
+                old_to_new_id[old_id] = i
+                ac["agent_id"] = i
+            config["agent_configs"] = agent_configs
+
+            # Remap initial post agent IDs
+            for cfg_key in ("event_config", "twitter_config", "reddit_config"):
+                posts = config.get(cfg_key, {}).get("initial_posts", [])
+                for post in posts:
+                    old_pid = post.get("poster_agent_id")
+                    if old_pid is not None and old_pid in old_to_new_id:
+                        post["poster_agent_id"] = old_to_new_id[old_pid]
+
+            min_e = name_to_edges.get(agent_configs[-1].get("entity_name", ""), 0)
+            max_e = name_to_edges.get(agent_configs[0].get("entity_name", ""), 0)
+            log_manager.info(
+                f"  - Agent过滤: {len(agent_configs) + len(removed)} → {len(agent_configs)} "
+                f"(按图谱连接度, 边数范围: {min_e}-{max_e})"
+            )
+        except Exception as e:
+            log_manager.info(f"  - Agent过滤失败 (使用全部): {e}")
+
     log_manager.info("日志结构:")
     log_manager.info(f"  - 主日志: simulation.log")
     log_manager.info(f"  - Twitter动作: twitter/actions.jsonl")

@@ -170,6 +170,7 @@ class EntityReader:
         graph_id: str,
         defined_entity_types: Optional[List[str]] = None,
         enrich_with_edges: bool = True,
+        max_entities: int = 0,
         source: str = "upload"
     ) -> FilteredEntities:
         """
@@ -375,6 +376,17 @@ class EntityReader:
 
         if skipped_types:
             logger.info(f"跳过非Agent实体类型: {dict(sorted(skipped_types.items(), key=lambda x: -x[1]))}")
+
+        # Rank by graph connectivity and limit if requested
+        if max_entities > 0 and len(filtered_entities) > max_entities:
+            filtered_entities.sort(key=lambda e: len(e.related_edges), reverse=True)
+            min_edges = len(filtered_entities[max_entities - 1].related_edges)
+            max_edges = len(filtered_entities[0].related_edges)
+            logger.info(
+                f"按图谱连接度排序: {len(filtered_entities)} → top {max_entities} "
+                f"(边数范围: {min_edges}-{max_edges})"
+            )
+            filtered_entities = filtered_entities[:max_entities]
 
         logger.info(f"筛选完成: 总节点 {total_count}, 符合条件 {len(filtered_entities)}, "
                    f"实体类型: {entity_types_found}")

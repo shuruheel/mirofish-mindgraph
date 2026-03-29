@@ -434,6 +434,10 @@ class GraphMemoryUpdater:
                     agent_uid = self._agent_node_uids.get(activity.agent_name)
                     if journal_uid and agent_uid:
                         pending_links.append((agent_uid, journal_uid))
+                    elif not journal_uid:
+                        logger.warning(f"Journal创建无UID返回: {activity.agent_name}")
+                    elif not agent_uid:
+                        logger.warning(f"Agent节点UID未找到: '{activity.agent_name}' (已注册: {len(self._agent_node_uids)}个)")
 
                     journals_sent += 1
                     self._total_claims += 1
@@ -459,6 +463,7 @@ class GraphMemoryUpdater:
 
         # Batch create Agent → Journal links (single API call)
         if pending_links:
+            logger.info(f"创建 {len(pending_links)} 条 AUTHORED 边")
             try:
                 batch_edges = [
                     {"from_uid": from_uid, "to_uid": to_uid, "edge_type": "AUTHORED"}
@@ -467,18 +472,17 @@ class GraphMemoryUpdater:
                 result = self.client.batch_create(edges=batch_edges)
                 errors = result.get("errors", [])
                 if errors:
-                    logger.debug(f"Batch link creation: {len(errors)} errors")
+                    logger.warning(f"Batch AUTHORED edge creation: {len(errors)} errors: {errors[:3]}")
             except Exception as e:
-                logger.debug(f"Batch link creation failed, falling back to individual: {e}")
-                # Fallback to individual link creation
+                logger.warning(f"Batch AUTHORED edge creation failed, falling back to individual: {e}")
                 for from_uid, to_uid in pending_links:
                     try:
                         self.client.add_link(
                             from_uid=from_uid, to_uid=to_uid,
                             edge_type="AUTHORED", project_id=self.graph_id,
                         )
-                    except Exception:
-                        pass
+                    except Exception as link_err:
+                        logger.warning(f"Individual AUTHORED edge failed: {from_uid} -> {to_uid}: {link_err}")
 
         # 批量写入trace条目
         if trace_texts:

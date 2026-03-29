@@ -349,6 +349,7 @@ class SimulationManager:
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
         parallel_profile_count: int = 20,
+        max_agents: int = 0,
         source: str = "upload"
     ) -> SimulationState:
         """
@@ -396,6 +397,7 @@ class SimulationManager:
                 graph_id=state.graph_id,
                 defined_entity_types=defined_entity_types,
                 enrich_with_edges=True,
+                max_entities=max_agents,
                 source=source
             )
             

@@ -363,6 +363,7 @@ class SimulationRunner:
         simulation_id: str,
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # 最大模拟轮数（可选，用于截断过长的模拟）
+        max_agents: int = 0,  # 最大Agent数量（按图谱连接度排序，0=不限制）
         enable_graph_memory_update: bool = False,  # 是否将活动更新到MindGraph图谱
         graph_id: str = None,  # MindGraph图谱ID（启用图谱更新时必需）
         source: str = "upload",  # 项目来源（"upload" 或 "mindgraph"）
@@ -497,6 +498,8 @@ class SimulationRunner:
             # 如果指定了最大轮数，添加到命令行参数
             if max_rounds is not None and max_rounds > 0:
                 cmd.extend(["--max-rounds", str(max_rounds)])
+            if max_agents and max_agents > 0:
+                cmd.extend(["--max-agents", str(max_agents)])
             
             # 创建主日志文件，避免 stdout/stderr 管道缓冲区满导致进程阻塞
             main_log_path = os.path.join(sim_dir, "simulation.log")
@@ -714,7 +717,8 @@ class SimulationRunner:
                                 elif event_type == "round_end":
                                     round_num = action_data.get("round", 0)
                                     simulated_hours = action_data.get("simulated_hours", 0)
-                                    
+                                    round_actions = action_data.get("total_actions", 0)
+
                                     # 更新各平台独立的轮次和时间
                                     if platform == "twitter":
                                         if round_num > state.twitter_current_round:
@@ -724,21 +728,35 @@ class SimulationRunner:
                                         if round_num > state.reddit_current_round:
                                             state.reddit_current_round = round_num
                                         state.reddit_simulated_hours = simulated_hours
-                                    
+
                                     # 总体轮次取两个平台的最大值
                                     if round_num > state.current_round:
                                         state.current_round = round_num
                                     # 总体时间取两个平台的最大值
                                     state.simulated_hours = max(state.twitter_simulated_hours, state.reddit_simulated_hours)
 
+                                    # Log milestone
+                                    logger.info(
+                                        f"[{platform.upper()}] Round {round_num}/{state.total_rounds} "
+                                        f"completed, {round_actions} actions"
+                                    )
+
                                     # 轮间衰减 + 记录轮次观察
                                     if graph_updater:
                                         graph_updater.record_round_end(
                                             round_num=round_num,
                                             platform=platform,
-                                            actions_count=action_data.get("total_actions", 0),
+                                            actions_count=round_actions,
                                         )
                                         graph_updater.decay_round(round_num)
+
+                                elif event_type == "round_start":
+                                    round_num = action_data.get("round", 0)
+                                    active_agents = action_data.get("active_agents", "?")
+                                    logger.info(
+                                        f"[{platform.upper()}] Round {round_num} started, "
+                                        f"{active_agents} active agents"
+                                    )
 
                                 continue
                             

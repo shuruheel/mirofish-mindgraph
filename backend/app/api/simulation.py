@@ -264,7 +264,7 @@ def create_simulation():
             src_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, clone_from)
             dst_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, state.simulation_id)
             files_copied = []
-            for fname in ['reddit_profiles.json', 'twitter_profiles.csv', 'simulation_config.json']:
+            for fname in ['reddit_profiles.json', 'twitter_profiles.csv', 'simulation_config.json', 'agent_node_uids.json']:
                 src = os.path.join(src_dir, fname)
                 if os.path.exists(src):
                     shutil.copy2(src, os.path.join(dst_dir, fname))
@@ -558,6 +558,7 @@ def prepare_simulation():
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 20)
+        max_agents = data.get('max_agents', 27)  # 按图谱连接度取top N，默认27
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
@@ -676,6 +677,7 @@ def prepare_simulation():
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
                     parallel_profile_count=parallel_profile_count,
+                    max_agents=max_agents,
                     source=project_source
                 )
                 
@@ -1590,6 +1592,7 @@ def start_simulation():
 
         platform = data.get('platform', 'parallel')
         max_rounds = data.get('max_rounds')  # 可选：最大模拟轮数
+        max_agents = data.get('max_agents', 27)  # 可选：最大Agent数量（按图谱连接度，默认27）
         enable_graph_memory_update = data.get('enable_graph_memory_update', False)  # 可选：是否启用图谱记忆更新
         force = data.get('force', False)  # 可选：强制重新开始
 
@@ -1715,6 +1718,7 @@ def start_simulation():
             simulation_id=simulation_id,
             platform=platform,
             max_rounds=max_rounds,
+            max_agents=max_agents,
             enable_graph_memory_update=enable_graph_memory_update,
             graph_id=graph_id,
             source=project_source,

@@ -1021,6 +1021,35 @@ class MindGraphClient:
             operation_name=f"delete node({uid[:12]})",
         )
 
+    def batch_delete_nodes(
+        self,
+        uids: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        reason: str = "cleanup",
+        hard_purge: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Batch delete nodes via POST /nodes/delete.
+
+        Soft-deletes (tombstones) nodes and their connected edges.
+        At least one of uids, agent_id, or filter must be provided.
+
+        Returns:
+            {nodes_tombstoned, edges_tombstoned, nodes_purged, edges_purged}
+        """
+        body: Dict[str, Any] = {"reason": reason, "hard_purge": hard_purge}
+        if uids:
+            body["uids"] = uids
+        if agent_id:
+            body["agent_id"] = agent_id
+        if filter:
+            body["filter"] = filter
+        return self._with_retry(
+            self._mg._request, "POST", "/nodes/delete", json=body,
+            operation_name=f"batch delete(agent_id={agent_id}, filter={filter})",
+        )
+
     def decay_salience(self, project_id: str, half_life_secs: int = 86400,
                        min_salience: float = 0.1) -> Dict[str, Any]:
         """
@@ -1044,34 +1073,14 @@ class MindGraphClient:
 
     def delete_project_data(self, project_id: str):
         """
-        Delete all data for a project
-
-        Uses list_all_nodes() (prefers get_agent_nodes) to ensure only nodes
-        belonging to this project's namespace are deleted, not global nodes.
+        Delete all data for a project namespace via batch delete.
         """
         logger.info(f"Starting project data deletion: project_id={project_id}")
-        deleted = 0
-        max_iterations = 100  # Safety limit to prevent infinite loops
-
-        for iteration in range(max_iterations):
-            nodes = self.list_all_nodes(project_id=project_id, max_items=100)
-            if not nodes:
-                break
-            for node in nodes:
-                uid = node.get("uid", "")
-                if uid:
-                    try:
-                        self.delete_node(uid)
-                        deleted += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to delete node: uid={uid}, error={e}")
-        else:
-            logger.warning(
-                f"delete_project_data reached iteration limit ({max_iterations}): "
-                f"project_id={project_id}, deleted={deleted}"
-            )
-
-        logger.info(f"Project data deletion complete: project_id={project_id}, deleted={deleted}")
+        result = self.batch_delete_nodes(agent_id=project_id, reason="project_cleanup")
+        logger.info(
+            f"Project data deletion complete: project_id={project_id}, "
+            f"nodes={result.get('nodes_tombstoned', 0)}, edges={result.get('edges_tombstoned', 0)}"
+        )
 
     # ═══════════════════════════════════════
     # Statistics and export

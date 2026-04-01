@@ -6,6 +6,7 @@ These are namespaced separately from the original graph content, so they
 can be safely identified and deleted without affecting the source graph.
 
 Node types created by simulations:
+  - Agent:       Simulation agent nodes (Phase 4 registration)
   - Journal:     Agent posts and stance records (Memory layer)
   - Trace:       Agent interaction traces (likes, reposts, etc.)
   - Decision:    Agent decision records (Intent layer)
@@ -13,7 +14,6 @@ Node types created by simulations:
   - Observation: Round completion events
   - Session:     MindGraph session nodes
   - Hypothesis:  Simulation prediction hypothesis
-  - Entity:      SimulationAgent nodes (Phase 4 registration)
 
 Usage:
     # Delete all simulation nodes for a project (single API call)

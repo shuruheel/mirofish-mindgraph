@@ -582,7 +582,7 @@ class SimulationManager:
                     logger.info(f"Registered prediction hypothesis: {simulation_requirement[:50]}...")
 
                     # ── Collect all nodes for batch creation ──
-                    # Entity nodes (SimulationAgent) + Journal nodes (stance records)
+                    # Agent nodes (simulation agents) + Journal nodes (stance records)
                     batch_nodes = []
                     node_metadata = []  # Parallel array: {kind, name, ...}
 
@@ -593,12 +593,11 @@ class SimulationManager:
                         influence = getattr(agent_config, 'influence_weight', 1.0)
                         entity_type = getattr(agent_config, 'entity_type', '')
 
-                        # Entity node for this agent
+                        # Agent node for this simulation agent
                         batch_nodes.append({
                             "label": name,
                             "props": {
-                                "_type": "Entity",
-                                "entity_type": "SimulationAgent",
+                                "_type": "Agent",
                                 "original_entity_type": entity_type,
                                 "stance": stance,
                                 "sentiment_bias": sentiment,
@@ -608,7 +607,7 @@ class SimulationManager:
                             },
                             "agent_id": state.graph_id,
                         })
-                        node_metadata.append({"kind": "entity", "name": name})
+                        node_metadata.append({"kind": "agent", "name": name})
 
                         # Journal node for non-neutral agents
                         if stance != "neutral":
@@ -648,13 +647,13 @@ class SimulationManager:
                         if not uid:
                             continue
 
-                        if meta["kind"] == "entity":
+                        if meta["kind"] == "agent":
                             agent_node_uids[meta["name"]] = uid
                             last_entity_uid = uid
 
                         elif meta["kind"] == "journal":
                             journals_created += 1
-                            # Link Agent → Journal (agent is the most recent entity before this journal)
+                            # Link Agent → Journal
                             entity_uid = agent_node_uids.get(meta["name"], "")
                             if entity_uid:
                                 batch_edges.append({

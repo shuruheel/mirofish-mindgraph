@@ -90,21 +90,24 @@ class GraphContextProvider:
 
         self._warmed = False
 
+    # Agent-compatible node types whose edges form the relationship map
+    _AGENT_NODE_TYPES = {"Person", "Organization"}
+
     def warm_cache(self):
         """
         Load session-level caches. Called once at simulation start.
-        Fetches all Entity nodes and their edges via batch APIs.
+        Fetches Person/Organization nodes and their edges via batch APIs.
         """
         t0 = time.time()
 
-        # 1. Load all Entity nodes from the full graph (book knowledge)
+        # 1. Load all nodes from the full graph (book knowledge)
         try:
             all_nodes = self._client.list_all_graph_nodes(max_items=3000)
         except Exception as e:
             logger.warning(f"Failed to load graph nodes: {e}")
             all_nodes = []
 
-        # Pass 1: Index all nodes by name and collect entity UIDs
+        # Pass 1: Index all nodes by name and collect Person/Organization UIDs
         entity_uids = []
         claim_nodes = []
         for node in all_nodes:
@@ -118,7 +121,7 @@ class GraphContextProvider:
             self._entity_nodes[label] = node
             self._entity_uid_map[label] = uid
 
-            if node_type == "Entity":
+            if node_type in self._AGENT_NODE_TYPES:
                 entity_uids.append(uid)
             elif node_type == "Claim":
                 claim_nodes.append(node)

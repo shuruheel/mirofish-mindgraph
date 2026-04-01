@@ -636,14 +636,40 @@ class MindGraphClient:
     # Entity management
     # ═══════════════════════════════════════
 
+    # Node types that have dedicated SDK creation methods
+    _TYPED_ENTITY_CREATORS = {
+        "person": "find_or_create_person",
+        "organization": "find_or_create_organization",
+        "nation": "find_or_create_nation",
+        "event": "find_or_create_event",
+        "place": "find_or_create_place",
+        "concept": "find_or_create_concept",
+    }
+
     def create_entity(self, name: str, entity_type: str, project_id: str,
                       description: str = "", props: Optional[Dict] = None) -> Dict[str, Any]:
-        """Explicitly create entity node"""
+        """Explicitly create entity node.
+
+        Uses type-specific SDK methods (find_or_create_person, etc.) for
+        known entity types so they are created as first-class node types
+        (Person, Organization) rather than generic Entity nodes with an
+        entity_type property.
+        """
         entity_props = {
-            "entity_type": entity_type,
             "description": description,
             **(props or {})
         }
+        creator_name = self._TYPED_ENTITY_CREATORS.get(entity_type.lower())
+        if creator_name:
+            creator = getattr(self._mg, creator_name)
+            return self._with_retry(
+                creator,
+                label=name,
+                props=entity_props,
+                agent_id=project_id,
+                operation_name=f"create {entity_type.lower()}({name})",
+            )
+        entity_props["entity_type"] = entity_type
         return self._with_retry(
             self._mg.find_or_create_entity,
             label=name,

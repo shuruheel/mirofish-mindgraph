@@ -246,7 +246,7 @@ def run_tests():
         result = api("POST", "/reality/entity", json_body={
             "action": "create",
             "label": "Beijing Housing and Construction Bureau",
-            "props": {"entity_type": "Organization", "description": "Government department responsible for housing construction in Beijing", "role": "regulator"},
+            "props": {"entity_type": "organization", "description": "Government department responsible for housing construction in Beijing", "role": "regulator"},
             "agent_id": PROJECT_ID,
         })
         entity_uid = result.get("uid", "")
@@ -466,7 +466,7 @@ def run_tests():
             "action": "register_agent",
             "label": "Zhang Ming",
             "summary": "Person: opposing stance, sentiment=-0.5",
-            "props": {"entity_type": "Person", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
+            "props": {"entity_type": "person", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
             "agent_id": PROJECT_ID,
         })
         agent_uid = result.get("uid", "")
@@ -480,7 +480,7 @@ def run_tests():
             result = api("POST", "/node", json_body={
                 "label": "Zhang Ming",
                 "node_type": "Agent",
-                "props": {"entity_type": "Person", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
+                "props": {"entity_type": "person", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
                 "agent_id": PROJECT_ID,
             })
             agent_uid = result.get("uid", "")
@@ -494,7 +494,7 @@ def run_tests():
                 result = api("POST", "/reality/entity", json_body={
                     "action": "create",
                     "label": "Zhang Ming (Agent)",
-                    "props": {"entity_type": "Agent", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
+                    "props": {"entity_type": "other", "stance": "opposing", "sentiment_bias": -0.5, "influence_weight": 0.8},
                     "agent_id": PROJECT_ID,
                 })
                 agent_uid = result.get("uid", "")

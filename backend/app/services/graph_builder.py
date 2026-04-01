@@ -389,12 +389,13 @@ class GraphBuilderService:
         """
         try:
             nodes = self.client.list_all_nodes(project_id=graph_id)
+            _ENTITY_TYPES = {"Entity", "Person", "Organization"}
             entity_nodes = [
                 n for n in nodes
-                if n.get("node_type", n.get("type", "")) == "Entity"
+                if n.get("node_type", n.get("type", "")) in _ENTITY_TYPES
             ]
             logger.info(
-                f"Entity dedup check: {len(entity_nodes)} Entity nodes / "
+                f"Entity dedup check: {len(entity_nodes)} entity nodes / "
                 f"{len(nodes)} total nodes (MindGraph auto-dedup)"
             )
         except Exception as e:

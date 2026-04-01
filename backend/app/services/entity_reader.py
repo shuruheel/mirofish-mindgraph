@@ -80,6 +80,10 @@ class EntityReader:
             raise ValueError("MINDGRAPH_API_KEY is not configured")
         self.client = MindGraphClient()
 
+    # Node types that can act as simulation agents (post on social media).
+    # These are first-class node types in MindGraph — no props.entity_type needed.
+    _AGENT_NODE_TYPES = {"Person", "Organization"}
+
     @staticmethod
     def _normalize_node(mg_node: Dict[str, Any]) -> Dict[str, Any]:
         """Convert MindGraph node to internal format"""
@@ -192,6 +196,23 @@ class EntityReader:
         lower = entity_type_str.lower()
         return any(kw in lower for kw in cls._AGENT_TYPE_KEYWORDS)
 
+    @classmethod
+    def _resolve_entity_type(cls, mg_node: Dict[str, Any]) -> str:
+        """Determine the entity type for a MindGraph node.
+
+        Person and Organization are first-class node types — their node_type
+        is the entity type.  For generic Entity nodes (upload mode custom
+        ontology types), the type is read from ``props.entity_type``.
+        """
+        node_type = mg_node.get("node_type", mg_node.get("type", ""))
+        if node_type in cls._AGENT_NODE_TYPES:
+            return node_type
+        # Generic Entity node (upload mode) — fall back to props.entity_type
+        return (
+            mg_node.get("entity_type", "")
+            or mg_node.get("props", {}).get("entity_type", "")
+        )
+
     def _semantic_search_entities(
         self,
         query: str,
@@ -204,7 +225,7 @@ class EntityReader:
             results = self.client.semantic_search(
                 query=query,
                 k=k,
-                node_types=["Entity"],
+                node_types=["Person", "Organization"],
             )
         except Exception as e:
             logger.warning(f"Semantic search failed for query '{query[:60]}...': {e}")
@@ -212,7 +233,7 @@ class EntityReader:
 
         # /retrieve returns [{"node": {...}, "score": ...}, ...] — unwrap
         nodes = [r.get("node", r) if isinstance(r, dict) and "node" in r else r for r in results]
-        logger.info(f"Semantic search returned {len(nodes)} Entity nodes for query '{query[:60]}...'")
+        logger.info(f"Semantic search returned {len(nodes)} entity nodes for query '{query[:60]}...'")
 
         filtered = []
         types_found: Set[str] = set()
@@ -224,31 +245,22 @@ class EntityReader:
                 continue
             seen_uids.add(uid)
 
-            entity_type = mg_node.get("entity_type", "") or mg_node.get("props", {}).get("entity_type", "")
+            # Person/Organization node_type IS the entity type
+            entity_type = mg_node.get("node_type", mg_node.get("type", ""))
 
-            if defined_entity_types:
-                if entity_type not in defined_entity_types:
-                    continue
-            elif not self._is_agent_compatible(entity_type):
-                skipped[entity_type] = skipped.get(entity_type, 0) + 1
+            if defined_entity_types and entity_type not in defined_entity_types:
                 continue
 
             types_found.add(entity_type)
             node = self._normalize_node(mg_node)
-            entity_labels = list(node["labels"])
-            if entity_type and entity_type not in entity_labels:
-                entity_labels.append(entity_type)
 
             filtered.append(EntityNode(
                 uuid=node["uuid"],
                 name=node["name"],
-                labels=entity_labels,
+                labels=node["labels"],
                 summary=node["summary"],
                 attributes=node["attributes"],
             ))
-
-        if skipped:
-            logger.info(f"Skipped non-agent types: {dict(sorted(skipped.items(), key=lambda x: -x[1]))}")
 
         return filtered, types_found, skipped, seen_uids
 
@@ -532,10 +544,12 @@ class EntityReader:
             logger.info("Semantic entity search returned None, falling back to paginated approach")
 
         # Get nodes
-        # MindGraph mode: only get Entity type nodes (server-side filtering, significantly reducing data volume)
+        # MindGraph mode: fetch only Person and Organization nodes (agent-compatible types)
         if source == "mindgraph":
-            logger.info("MindGraph mode: fetching Entity type nodes only...")
-            mg_nodes = self.client.list_all_graph_nodes(node_type="Entity")
+            logger.info("MindGraph mode: fetching Person/Organization nodes...")
+            mg_nodes = []
+            for nt in ("Person", "Organization"):
+                mg_nodes.extend(self.client.list_all_graph_nodes(node_type=nt))
             all_nodes = [self._normalize_node(n) for n in mg_nodes]
         else:
             all_nodes = self.get_all_nodes(graph_id, source=source)
@@ -546,24 +560,15 @@ class EntityReader:
 
         # ========== Filter entity nodes ==========
         #
-        # MindGraph has 55+ node types across 6 cognitive layers.
-        # Only "Entity" nodes represent real-world entities (people, orgs, places).
-        # Everything else (Claim, Concept, Hypothesis, Pattern, Theory, etc.)
-        # is knowledge structure and should NOT become agent personas.
-        #
-        # Strategy:
-        #   source="mindgraph" → allowlist: only keep node_type="Entity"
-        #   source="upload"    → blocklist: exclude known infrastructure types
-        #                        (upload mode uses custom ontology types as node_type)
+        # MindGraph mode: we already fetched only Person/Organization nodes,
+        #   so all nodes are agent-compatible candidates.
+        # Upload mode: uses custom ontology types as node_type; exclude
+        #   known infrastructure types via blocklist.
 
         if source == "mindgraph":
-            # Allowlist: only Entity nodes from the MindGraph graph
-            entity_candidates = []
-            for node in all_nodes:
-                labels = node.get("labels", [])
-                if "Entity" in labels:
-                    entity_candidates.append(node)
-            logger.info(f"MindGraph mode: {len(entity_candidates)}/{total_count} Entity nodes")
+            # Already filtered at fetch time — all nodes are Person/Organization
+            entity_candidates = all_nodes
+            logger.info(f"MindGraph mode: {len(entity_candidates)} Person/Organization nodes")
         else:
             # Blocklist: exclude infrastructure types (upload mode)
             BASE_TYPES = {
@@ -599,16 +604,12 @@ class EntityReader:
             all_edges = self.get_all_edges(graph_id, source=source)
 
         # ========== Classify entity_type and filter ==========
-        #
-        # MindGraph Entity nodes can represent anything extracted from text:
-        # people, organizations, concepts, events, places, policies, etc.
-        # Only people and organizations can become agent personas.
 
-        # Log entity_type distribution for debugging
+        # Log type distribution for debugging
         if source == "mindgraph":
             type_counts: Dict[str, int] = {}
             for node in entity_candidates:
-                et = node.get("attributes", {}).get("entity_type", "Unknown")
+                et = node.get("labels", ["Unknown"])[0]
                 type_counts[et] = type_counts.get(et, 0) + 1
             logger.info(f"Entity type distribution: {dict(sorted(type_counts.items(), key=lambda x: -x[1]))}")
 
@@ -621,14 +622,8 @@ class EntityReader:
             attributes = node.get("attributes", {})
 
             if source == "mindgraph":
-                # MindGraph Entity nodes: use props.entity_type as the real type
-                props_entity_type = attributes.get("entity_type", "")
-                entity_type = props_entity_type or "Entity"
-
-                # Filter: only keep agent-compatible entities for simulation
-                if not defined_entity_types and not self._is_agent_compatible(entity_type):
-                    skipped_types[entity_type] = skipped_types.get(entity_type, 0) + 1
-                    continue
+                # Person/Organization: node_type IS the entity type
+                entity_type = labels[0] if labels else "Unknown"
             else:
                 # Upload mode: use the custom label as entity type
                 BASE_TYPES_UPLOAD = {

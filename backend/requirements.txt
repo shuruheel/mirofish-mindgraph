@@ -14,7 +14,7 @@ flask-cors>=6.0.0
 openai>=1.0.0
 
 # ============= MindGraph 知识图谱 =============
-mindgraph-sdk>=0.1.0
+mindgraph-sdk>=0.8,<0.9
 requests>=2.31.0
 
 # ============= OASIS 社交媒体模拟 =============

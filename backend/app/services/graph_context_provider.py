@@ -62,9 +62,6 @@ class GraphContextProvider:
         self._project_id = project_id
         self._sim_dir = sim_dir
 
-        # Dedicated retrieval client with moderate timeout (initialized lazily)
-        self._retrieval_client = None
-
         # Session-level caches (book knowledge — loaded once)
         self._entity_nodes: Dict[str, Dict] = {}       # name → node dict
         self._entity_uid_map: Dict[str, str] = {}       # name → uid
@@ -295,19 +292,14 @@ class GraphContextProvider:
 
         # Step 2: Retrieve from the knowledge graph (epistemic layer)
         try:
-            if self._retrieval_client is None:
-                from mindgraph import MindGraph
-                self._retrieval_client = MindGraph(
-                    self._client.base_url,
-                    api_key=self._client.api_key,
-                    timeout=120.0,  # Background thread — no rush
-                )
-
             t0 = time.time()
-            result = self._retrieval_client.retrieve_context(
+            # Route through the shared wrapper: handles the 0.8 retrieve_context
+            # contract, retries, and response-shape normalization.
+            # include_chunks=True because _format_retrieval_result renders chunk text.
+            result = self._client.retrieve_context(
                 query=query,
                 k=5,
-                depth=1,
+                include_chunks=True,
                 layer="epistemic",
             )
             elapsed = time.time() - t0

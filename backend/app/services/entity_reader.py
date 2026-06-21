@@ -443,16 +443,13 @@ class EntityReader:
         keywords = self._get_keywords(requirement)
         logger.info(f"Entity relevance ranking: query='{keywords[:80]}...'")
 
-        # Step 2: Retrieve epistemic context
+        # Step 2: Retrieve epistemic context via the shared wrapper (handles the
+        # 0.8 retrieve_context contract, retries, concurrency, and shape normalization).
+        # include_chunks=True because the ranking below counts mentions in chunk text.
         try:
-            from mindgraph import MindGraph
-            import os
-            mg = MindGraph(
-                os.environ.get("MINDGRAPH_BASE_URL", "https://api.mindgraph.cloud"),
-                api_key=os.environ.get("MINDGRAPH_API_KEY", ""),
-                timeout=300,
+            result = self.client.retrieve_context(
+                query=keywords, k=20, include_chunks=True, layer="epistemic",
             )
-            result = mg.retrieve_context(query=keywords, k=20, layer="epistemic")
             chunks = result.get("chunks", [])
             graph_nodes = result.get("graph", {}).get("nodes", [])
         except Exception as e:

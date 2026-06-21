@@ -8,11 +8,37 @@ Run: python3 backend/tests/test_mindgraph_integration.py
 """
 
 import json
+import os
 import time
 import requests
 
-API_KEY = "mg_live_7wrlvd84doov4ixiy6hlev2n63ch7h0b"
-BASE_URL = "https://api.mindgraph.cloud"
+
+def _load_credentials():
+    """Read MindGraph credentials from the environment, falling back to the
+    repo-root .env. The key is intentionally NOT hardcoded — committing a live
+    key is a secret leak, and rotated keys silently break the test with 401s.
+    """
+    key = os.environ.get("MINDGRAPH_API_KEY")
+    base = os.environ.get("MINDGRAPH_BASE_URL", "https://api.mindgraph.cloud")
+    if not key:
+        env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("MINDGRAPH_API_KEY="):
+                        key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    elif line.startswith("MINDGRAPH_BASE_URL="):
+                        base = line.split("=", 1)[1].strip().strip('"').strip("'")
+    return key, base
+
+
+API_KEY, BASE_URL = _load_credentials()
+if not API_KEY:
+    raise SystemExit(
+        "MINDGRAPH_API_KEY not configured. Set it in the environment or the repo-root .env "
+        "before running this integration test."
+    )
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
@@ -151,17 +177,22 @@ def run_tests():
         except Exception as e:
             r.fail(f"search_{action_name}", e)
 
-    # retrieve_context (RAG)
+    # retrieve_context (RAG) — 0.8 contract: node_limit/article_limit/chunk_limit
     try:
         result = api("POST", "/retrieve/context", json_body={
             "query": "rental policy impact",
-            "k": 3,
-            "depth": 1,
+            "node_limit": 3,
+            "article_limit": 2,
+            "chunk_limit": 3,
             "agent_id": PROJECT_ID,
         })
         chunks = result.get("chunks", [])
+        articles = result.get("articles", [])
         graph = result.get("graph", {})
-        r.ok("retrieve_context (RAG)", f"chunks={len(chunks)}, graph_keys={list(graph.keys()) if isinstance(graph, dict) else 'N/A'}")
+        top_nodes = result.get("nodes", [])  # some 0.8 builds surface nodes at top level
+        r.ok("retrieve_context (RAG)",
+             f"chunks={len(chunks)}, articles={len(articles)}, top_nodes={len(top_nodes)}, "
+             f"graph_keys={list(graph.keys()) if isinstance(graph, dict) else 'N/A'}")
     except Exception as e:
         r.fail("retrieve_context", e)
 

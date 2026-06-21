@@ -270,42 +270,76 @@ class MindGraphClient:
     def retrieve_context(self, query: str, project_id: Optional[str] = None,
                          k: int = 5, depth: int = 1,
                          include_chunks: Optional[bool] = None,
-                         node_types: Optional[List[str]] = None) -> Dict[str, Any]:
+                         node_types: Optional[List[str]] = None,
+                         layer: Optional[str] = None,
+                         article_limit: int = 0) -> Dict[str, Any]:
         """
-        Graph-augmented RAG retrieval
+        Graph-augmented RAG retrieval (MindGraph SDK 0.8.x contract).
 
-        SDK v0.1.4+ provides native retrieve_context() method that searches the entire graph.
-        When project_id is specified, agent_id is passed via _request for namespace filtering.
-        When project_id is None, uses SDK native method to search the full graph.
+        The 0.8 ``/retrieve/context`` endpoint replaced the legacy
+        ``k``/``depth``/``include_chunks`` params with
+        ``node_limit``/``article_limit``/``chunk_limit``. This wrapper keeps the
+        legacy caller-facing signature and translates:
+          - ``k``              → ``node_limit`` (max graph nodes)
+          - ``include_chunks`` → ``chunk_limit`` (``k`` when truthy, else 0;
+            0.8 omits chunks by default)
+          - ``article_limit``  → wiki-article count (default 0 preserves pre-0.8
+            behavior of no synthesized articles)
+          - ``depth``          → dropped (no 0.8 server equivalent)
+
+        Namespace isolation: ``agent_id`` is sent only when ``project_id`` is
+        provided; otherwise the full graph is searched (MindGraph connect mode).
+        The SDK's native ``retrieve_context()`` does not accept ``agent_id``, so
+        we post via ``_request`` directly. The response is normalized to the
+        stable shape ``{"graph": {"nodes", "edges"}, "chunks", "articles",
+        "results"}`` so callers stay decoupled from server-side shape changes.
         """
+        body: Dict[str, Any] = {
+            "query": query,
+            "node_limit": k,
+            "article_limit": article_limit,
+            "chunk_limit": k if include_chunks else 0,
+        }
+        if layer is not None:
+            body["layer"] = layer
+        if node_types is not None:
+            body["node_types"] = node_types
         if project_id:
-            # With agent_id namespace filtering
-            body: Dict[str, Any] = {
-                "query": query,
-                "k": k,
-                "depth": depth,
-                "agent_id": project_id,
-            }
-            if include_chunks is not None:
-                body["include_chunks"] = include_chunks
-            if node_types is not None:
-                body["node_types"] = node_types
-            return self._with_retry(
-                self._mg._request, "POST", "/retrieve/context", body,
-                operation_name=f"RAG retrieval(query={query[:30]}..., k={k})",
-            )
+            body["agent_id"] = project_id
+
+        scope = f"project={project_id}" if project_id else "global"
+        result = self._with_retry(
+            self._mg._request, "POST", "/retrieve/context", body,
+            operation_name=f"RAG retrieval({scope}, query={query[:30]}..., k={k})",
+        )
+        return self._normalize_context_result(result)
+
+    @staticmethod
+    def _normalize_context_result(result: Any) -> Dict[str, Any]:
+        """Normalize a ``/retrieve/context`` response to a stable shape.
+
+        The 0.8 endpoint returns wiki articles, graph nodes (with
+        ``source_documents`` provenance), and optionally raw chunks. Depending on
+        the server build, graph nodes/edges may be nested under a ``graph`` key or
+        exposed at the top level; this collapses both into
+        ``{"graph": {"nodes", "edges"}, "chunks", "articles", "results"}``.
+        """
+        empty = {"graph": {"nodes": [], "edges": []}, "chunks": [], "articles": [], "results": []}
+        if not isinstance(result, dict):
+            return empty
+        graph = result.get("graph")
+        if isinstance(graph, dict):
+            nodes = graph.get("nodes") or []
+            edges = graph.get("edges") or []
         else:
-            # Search entire graph (MindGraph connection mode)
-            kwargs: Dict[str, Any] = {"query": query, "k": k, "depth": depth}
-            if include_chunks is not None:
-                kwargs["include_chunks"] = include_chunks
-            if node_types is not None:
-                kwargs["node_types"] = node_types
-            return self._with_retry(
-                self._mg.retrieve_context,
-                **kwargs,
-                operation_name=f"RAG global retrieval(query={query[:30]}..., k={k})",
-            )
+            nodes = result.get("nodes") or []
+            edges = result.get("edges") or []
+        return {
+            "graph": {"nodes": nodes, "edges": edges},
+            "chunks": result.get("chunks") or [],
+            "articles": result.get("articles") or [],
+            "results": result.get("results") or [],
+        }
 
     # ═══════════════════════════════════════
     # Cognitive queries
